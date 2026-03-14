@@ -177,6 +177,10 @@ public class AddressTextFieldSkin extends CustomTextFieldSkin {
             return isBech32LikePartial(lower);
         }
 
+        if(lower.startsWith(network.getMwebAddressHrp())) {
+            return isBech32LikePartial(lower);
+        }
+
         return false;
     }
 

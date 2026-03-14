@@ -111,6 +111,7 @@ public class AddressLabelSkin extends LabelSkin {
     private boolean isValidAddress(String candidate) {
         Network network = Network.get();
         return network.hasP2PKHAddressPrefix(candidate) || network.hasP2SHAddressPrefix(candidate) ||
+                        candidate.startsWith(network.getMwebAddressHrp()) ||
                         candidate.startsWith(network.getBech32AddressHRP()) || candidate.startsWith(network.getSilentPaymentsAddressHrp());
     }
 
