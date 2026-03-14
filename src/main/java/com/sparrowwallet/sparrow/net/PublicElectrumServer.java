@@ -9,18 +9,14 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 public enum PublicElectrumServer {
-    BLOCKSTREAM_INFO("blockstream.info", "ssl://blockstream.info:700", Network.MAINNET),
-    ELECTRUM_BLOCKSTREAM_INFO("electrum.blockstream.info", "ssl://electrum.blockstream.info:50002", Network.MAINNET),
-    LUKECHILDS_CO("bitcoin.lu.ke", "ssl://bitcoin.lu.ke:50002", Network.MAINNET),
-    EMZY_DE("electrum.emzy.de", "ssl://electrum.emzy.de:50002", Network.MAINNET),
-    BITAROO_NET("electrum.bitaroo.net", "ssl://electrum.bitaroo.net:50002", Network.MAINNET),
-    DIYNODES_COM("electrum.diynodes.com", "ssl://electrum.diynodes.com:50022", Network.MAINNET),
-    SETHFORPRIVACY_COM("fulcrum.sethforprivacy.com", "ssl://fulcrum.sethforprivacy.com:50002", Network.MAINNET),
-    TESTNET_ARANGUREN_ORG("testnet.aranguren.org", "ssl://testnet.aranguren.org:51002", Network.TESTNET),
-    TESTNET_QTORNADO_COM("testnet.qtornado.com", "ssl://testnet.qtornado.com:51002", Network.TESTNET),
-    SIGNET_MEMPOOL_SPACE("mempool.space", "ssl://mempool.space:60602", Network.SIGNET),
-    TESTNET4_MEMPOOL_SPACE("mempool.space", "ssl://mempool.space:40002", Network.TESTNET4),
-    TESTNET4_C3_SOFT("blackie.c3-soft.com", "ssl://blackie.c3-soft.com:57010", Network.TESTNET4);
+    ELECTRUM_LTC_ORG("backup.electrum-ltc.org", "ssl://backup.electrum-ltc.org:443", Network.MAINNET),
+    BYSH_ME("electrum-ltc.bysh.me", "ssl://electrum-ltc.bysh.me:50002", Network.MAINNET),
+    XURIOUS_COM("electrum.ltc.xurious.com", "ssl://electrum.ltc.xurious.com:50002", Network.MAINNET),
+    PRIVATESERVERS_NETWORK("electrum.privateservers.network", "ssl://electrum.privateservers.network:50005", Network.MAINNET),
+    CIPIG_NET("electrum1.cipig.net", "ssl://electrum1.cipig.net:20063", Network.MAINNET),
+    RENTONISK_COM("ltc.rentonisk.com", "ssl://ltc.rentonisk.com:50002", Network.MAINNET),
+    TESTNET_BYSH_ME("electrum-ltc.bysh.me", "ssl://electrum-ltc.bysh.me:51002", Network.TESTNET),
+    TESTNET_XURIOUS_COM("electrum.ltc.xurious.com", "ssl://electrum.ltc.xurious.com:51002", Network.TESTNET);
 
     PublicElectrumServer(String name, String url, Network network) {
         this.server = new Server(url, name);
