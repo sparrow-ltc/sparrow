@@ -585,10 +585,10 @@ public class TransactionDiagram extends GridPane {
         }
 
         if(unit.equals(BitcoinUnit.BTC)) {
-            return format.formatBtcValue(amount) + " BTC";
+            return format.formatBtcValue(amount) + " LTC";
         }
 
-        return format.formatSatsValue(amount) + " sats";
+        return format.formatSatsValue(amount) + " lits";
     }
 
     private Pane getInputsLines(List<Map<BlockTransactionHashIndex, WalletNode>> displayedUtxoSets) {
@@ -900,7 +900,7 @@ public class TransactionDiagram extends GridPane {
         boolean isFinalized = walletTx.getTransaction().hasScriptSigs() || walletTx.getTransaction().hasWitnesses();
         Tooltip tooltip = new Tooltip(walletTx.getTransaction().getLength() + " bytes\n"
                 + String.format("%.2f", walletTx.getTransaction().getVirtualSize()) + " vBytes"
-                + (walletTx.getFee() < 0 ? "" : "\n" + String.format("%.2f", walletTx.getFee() / walletTx.getTransaction().getVirtualSize()) + " sats/vB" + (isFinalized ? "" : " (non-final)")));
+                + (walletTx.getFee() < 0 ? "" : "\n" + String.format("%.2f", walletTx.getFee() / walletTx.getTransaction().getVirtualSize()) + " lits/vB" + (isFinalized ? "" : " (non-final)")));
         tooltip.setShowDelay(new Duration(TOOLTIP_SHOW_DELAY));
         tooltip.setShowDuration(Duration.INDEFINITE);
         tooltip.getStyleClass().add("transaction-tooltip");
@@ -1228,14 +1228,14 @@ public class TransactionDiagram extends GridPane {
                 getItems().add(showAddress);
             }
 
-            MenuItem copySatsValue = new MenuItem("Copy Value in sats");
+            MenuItem copySatsValue = new MenuItem("Copy Value in lits");
             copySatsValue.setOnAction(event -> {
                 hide();
                 ClipboardContent content = new ClipboardContent();
                 content.putString(Long.toString(value));
                 Clipboard.getSystemClipboard().setContent(content);
             });
-            MenuItem copyBtcValue = new MenuItem("Copy Value in BTC");
+            MenuItem copyBtcValue = new MenuItem("Copy Value in LTC");
             copyBtcValue.setOnAction(event -> {
                 hide();
                 ClipboardContent content = new ClipboardContent();

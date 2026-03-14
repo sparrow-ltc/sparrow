@@ -62,8 +62,8 @@ public class CoinLabel extends Label {
         setContextMenu(contextMenu);
 
         UnitFormat format = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
-        String satsValue = format.formatSatsValue(value) + " sats";
-        String btcValue = format.formatBtcValue(value) + " BTC";
+        String satsValue = format.formatSatsValue(value) + " lits";
+        String btcValue = format.formatBtcValue(value) + " LTC";
 
         BitcoinUnit unit = bitcoinUnit;
         if(unit == null || unit.equals(BitcoinUnit.AUTO)) {
@@ -81,7 +81,7 @@ public class CoinLabel extends Label {
 
     private class CoinContextMenu extends ContextMenu {
         public CoinContextMenu() {
-            MenuItem copySatsValue = new MenuItem("Copy Value in sats");
+            MenuItem copySatsValue = new MenuItem("Copy Value in lits");
             copySatsValue.setOnAction(AE -> {
                 hide();
                 ClipboardContent content = new ClipboardContent();
@@ -89,7 +89,7 @@ public class CoinLabel extends Label {
                 Clipboard.getSystemClipboard().setContent(content);
             });
 
-            MenuItem copyBtcValue = new MenuItem("Copy Value in BTC");
+            MenuItem copyBtcValue = new MenuItem("Copy Value in LTC");
             copyBtcValue.setOnAction(AE -> {
                 hide();
                 ClipboardContent content = new ClipboardContent();

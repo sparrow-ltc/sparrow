@@ -90,8 +90,8 @@ public abstract class TransactionFormController extends BaseController {
         pie.getData().forEach(data -> {
             Tooltip tooltip = new Tooltip();
             double percent = 100.0 * (data.getPieValue() / totalSum);
-            String satsValue = format.formatSatsValue((long)data.getPieValue()) + " sats";
-            String btcValue = format.formatBtcValue((long)data.getPieValue()) + " BTC";
+            String satsValue = format.formatSatsValue((long)data.getPieValue()) + " lits";
+            String btcValue = format.formatBtcValue((long)data.getPieValue()) + " LTC";
             tooltip.setText(data.getName() + "\n" + (Config.get().getBitcoinUnit() == BitcoinUnit.BTC ? btcValue : satsValue) + " (" + String.format("%.1f", percent) + "%)");
             Tooltip.install(data.getNode(), tooltip);
             data.pieValueProperty().addListener((observable, oldValue, newValue) -> tooltip.setText(newValue + "%"));

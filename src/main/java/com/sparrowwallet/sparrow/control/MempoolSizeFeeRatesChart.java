@@ -312,7 +312,7 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
                         double mvb = kvb / 1000;
                         if(mvb >= 0.01 || (maxMvB < Y_VALUE_BREAK_MVB && mvb > 0.001)) {
                             String amount = (maxMvB < Y_VALUE_BREAK_MVB ? (int)kvb + " kvB" : String.format("%.2f", mvb) + " MvB");
-                            Label label = new Label(series.getName() + " sats/vB: " + amount);
+                            Label label = new Label(series.getName() + " lits/vB: " + amount);
                             Glyph circle = new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.CIRCLE);
                             circle.setStyle("-fx-text-fill: VSIZE" + series.getName() + "_COLOR; -fx-opacity: 0.7;");
                             label.setGraphic(circle);

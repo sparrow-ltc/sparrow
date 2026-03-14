@@ -244,7 +244,7 @@ public class Payjoin {
                     // That's the payment output, the receiver may have changed it.
                 } else {
                     if(originalOutput.getKey().getValue() > proposedTxOut.getValue()) {
-                        throw new PayjoinReceiverException("The receiver decreased the value of one of the outputs from " + originalOutput.getKey().getValue() + " sats to " + proposedTxOut.getValue() + " sats");
+                        throw new PayjoinReceiverException("The receiver decreased the value of one of the outputs from " + originalOutput.getKey().getValue() + " lits to " + proposedTxOut.getValue() + " lits");
                     }
                 }
 

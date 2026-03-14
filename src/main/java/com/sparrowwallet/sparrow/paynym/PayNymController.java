@@ -473,7 +473,7 @@ public class PayNymController {
         ButtonType sendType = new ButtonType("Send", ButtonBar.ButtonData.YES);
         Optional<ButtonType> optButtonType = AppServices.showAlertDialog("Link PayNym?",
                 "Linking to this contact will allow you to send to it directly (non-collaboratively) through unique private addresses you can generate independently.\n\n" +
-                "It will cost " + MINIMUM_P2PKH_OUTPUT_SATS + " sats to create the link through a notification transaction, plus the mining fee. Send transaction?", Alert.AlertType.CONFIRMATION, previewType, ButtonType.CANCEL, sendType);
+                "It will cost " + MINIMUM_P2PKH_OUTPUT_SATS + " lits to create the link through a notification transaction, plus the mining fee. Send transaction?", Alert.AlertType.CONFIRMATION, previewType, ButtonType.CANCEL, sendType);
         if(optButtonType.isPresent() && optButtonType.get() == sendType) {
             broadcastNotificationTransaction(payNym);
         } else if(optButtonType.isPresent() && optButtonType.get() == previewType) {

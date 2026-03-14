@@ -636,7 +636,7 @@ public class HeadersController extends TransactionFormController implements Init
     private void updateFee(Long feeAmt) {
         fee.setValue(feeAmt);
         double feeRateAmt = feeAmt.doubleValue() / headersForm.getTransaction().getVirtualSize();
-        feeRate.setText(String.format("%.2f", feeRateAmt) + " sats/vB" + (headersForm.isTransactionFinalized() ? "" : " (non-final)"));
+        feeRate.setText(String.format("%.2f", feeRateAmt) + " lits/vB" + (headersForm.isTransactionFinalized() ? "" : " (non-final)"));
     }
 
     private WalletTransaction getWalletTransaction(Map<Sha256Hash, BlockTransaction> inputTransactions) {
@@ -1234,7 +1234,7 @@ public class HeadersController extends TransactionFormController implements Init
             double feeRateAmt = fee.getValue() / headersForm.getTransaction().getVirtualSize();
             if(feeRateAmt > AppServices.getLongFeeRatesRange().getLast() || (AppServices.getTargetBlockFeeRates() != null && feeRateAmt > AppServices.getDefaultFeeRate() * FEE_MULTIPLE_LIMIT)) {
                 Optional<ButtonType> optType = AppServices.showWarningDialog("Very high fee rate!",
-                        "This transaction pays a very high fee rate of " + String.format("%.0f", feeRateAmt) + " sats/vB.\n\nBroadcast this transaction?", ButtonType.YES, ButtonType.NO);
+                        "This transaction pays a very high fee rate of " + String.format("%.0f", feeRateAmt) + " lits/vB.\n\nBroadcast this transaction?", ButtonType.YES, ButtonType.NO);
                 if(optType.isPresent() && optType.get() == ButtonType.NO) {
                     broadcastButton.setDisable(false);
                     return;
@@ -1320,10 +1320,10 @@ public class HeadersController extends TransactionFormController implements Init
             if(failMessage.startsWith("min relay fee not met")) {
                 if(AppServices.getServerMinimumRelayFeeRate() != null && !AppServices.getServerMinimumRelayFeeRate().equals(AppServices.getMinimumRelayFeeRate())) {
                     AppServices.showErrorDialog("Error broadcasting transaction", "The fee rate for the signed transaction is below the minimum configured relay fee rate for the server of " +
-                            format.getCurrencyFormat().format(AppServices.getServerMinimumRelayFeeRate()) + " sats/vB.");
+                            format.getCurrencyFormat().format(AppServices.getServerMinimumRelayFeeRate()) + " lits/vB.");
                 } else {
                     Double minRelayFeeRate = AppServices.getServerMinimumRelayFeeRate() != null ? AppServices.getServerMinimumRelayFeeRate() : AppServices.getMinimumRelayFeeRate();
-                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee rate for the signed transaction is below the minimum " + format.getCurrencyFormat().format(minRelayFeeRate) + " sats/vB. " +
+                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee rate for the signed transaction is below the minimum " + format.getCurrencyFormat().format(minRelayFeeRate) + " lits/vB. " +
                             "This usually happens because a keystore has created a signature that is larger than necessary.\n\n" +
                             "You can solve this by recreating the transaction with a slightly increased fee rate.");
                 }
@@ -1335,7 +1335,7 @@ public class HeadersController extends TransactionFormController implements Init
                 Matcher minMempoolMatcher = MIN_MEMPOOL_FEE.matcher(failMessage);
                 if(minMempoolMatcher.matches()) {
                     long requiredFee = Long.parseLong(minMempoolMatcher.group(2));
-                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee for the transaction was insufficient for relay by your connected server. Increase the fee to at least " + requiredFee + " sats to try again.");
+                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee for the transaction was insufficient for relay by your connected server. Increase the fee to at least " + requiredFee + " lits to try again.");
                 } else {
                     AppServices.showErrorDialog("Error broadcasting transaction", "The fee for the transaction was insufficient for relay by your connected server. Increase the fee to try again.");
                 }
@@ -1346,10 +1346,10 @@ public class HeadersController extends TransactionFormController implements Init
                     long currentAdditionalFee = (long)(Double.parseDouble(feeMatcher.group(1)) * Transaction.SATOSHIS_PER_BITCOIN);
                     long requiredAdditionalFee = (long)(Double.parseDouble(feeMatcher.group(2)) * Transaction.SATOSHIS_PER_BITCOIN);
                     long requiredFee = fee.getValue() - currentAdditionalFee + requiredAdditionalFee;
-                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee for the replacement transaction was insufficient. Increase the fee to at least " + requiredFee + " sats to try again.");
+                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee for the replacement transaction was insufficient. Increase the fee to at least " + requiredFee + " lits to try again.");
                 } else if(feeRateMatcher.matches()) {
                     double requiredFeeRate = Double.parseDouble(feeRateMatcher.group(2)) * Transaction.SATOSHIS_PER_BITCOIN / 1000;
-                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee rate for the replacement transaction was insufficient. Increase the fee rate to at least " + format.getCurrencyFormat().format(requiredFeeRate) + " sats/vB to try again.");
+                    AppServices.showErrorDialog("Error broadcasting transaction", "The fee rate for the replacement transaction was insufficient. Increase the fee rate to at least " + format.getCurrencyFormat().format(requiredFeeRate) + " lits/vB to try again.");
                 } else {
                     AppServices.showErrorDialog("Error broadcasting transaction", "The fee for the replacement transaction was insufficient. Increase the fee to try again.");
                 }

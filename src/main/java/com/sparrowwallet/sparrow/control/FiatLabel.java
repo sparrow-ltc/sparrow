@@ -102,7 +102,7 @@ public class FiatLabel extends CopyableLabel {
             BigDecimal fiatBalance = btcBalance.multiply(BigDecimal.valueOf(getBtcRate()));
 
             String label = getCurrency().getSymbol() + " " + unitFormat.formatCurrencyValue(fiatBalance.doubleValue());
-            tooltip.setText("1 BTC = " + getCurrency().getSymbol() + " " + unitFormat.formatCurrencyValue(getBtcRate()));
+            tooltip.setText("1 LTC = " + getCurrency().getSymbol() + " " + unitFormat.formatCurrencyValue(getBtcRate()));
 
             setText(label);
             setTooltip(tooltip);
