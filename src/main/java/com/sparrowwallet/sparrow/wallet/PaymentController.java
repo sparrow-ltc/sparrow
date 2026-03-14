@@ -73,7 +73,7 @@ import static com.sparrowwallet.sparrow.AppServices.showErrorDialog;
 public class PaymentController extends WalletFormController implements Initializable {
     private static final Logger log = LoggerFactory.getLogger(PaymentController.class);
 
-    public static final long MINIMUM_P2PKH_OUTPUT_SATS = 546L;
+    public static final long MINIMUM_P2PKH_OUTPUT_SATS = 5460L;
 
     private SendController sendController;
 
