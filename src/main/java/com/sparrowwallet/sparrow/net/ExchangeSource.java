@@ -136,8 +136,9 @@ public enum ExchangeSource {
         public Double getExchangeRate(Currency currency) {
             String currencyCode = currency.getCurrencyCode();
             OptionalDouble optRate = getRates().rates.entrySet().stream().filter(rate -> currencyCode.equalsIgnoreCase(rate.getKey())).mapToDouble(rate -> rate.getValue().value).findFirst();
-            if(optRate.isPresent()) {
-                return optRate.getAsDouble();
+            OptionalDouble ltcRate = getRates().rates.entrySet().stream().filter(rate -> "ltc".equalsIgnoreCase(rate.getKey())).mapToDouble(rate -> rate.getValue().value).findFirst();
+            if(optRate.isPresent() && ltcRate.isPresent()) {
+                return optRate.getAsDouble() / ltcRate.getAsDouble();
             }
 
             return null;
@@ -173,7 +174,7 @@ public enum ExchangeSource {
             startDate = Math.max(cal.getTimeInMillis() / 1000, startDate);
             endDate = Math.max(cal.getTimeInMillis() / 1000, endDate);
 
-            String url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range?vs_currency=" + currency.getCurrencyCode() + "&from=" + startDate + "&to=" + endDate;
+            String url = "https://api.coingecko.com/api/v3/coins/litecoin/market_chart/range?vs_currency=" + currency.getCurrencyCode() + "&from=" + startDate + "&to=" + endDate;
 
             if(log.isInfoEnabled()) {
                 log.info("Requesting historical exchange rates from " + url);
@@ -198,7 +199,7 @@ public enum ExchangeSource {
             return historicalRates;
         }
     },
-    MEMPOOL_SPACE("mempool.space", "Historical rates from Apr 2023") {
+    MEMPOOL_SPACE("litecoinspace.org", "Historical rates from Apr 2023") {
         @Override
         public List<Currency> getSupportedCurrencies() {
             return getRates().rates.entrySet().stream().filter(price -> isValidISO4217Code(price.getKey().toUpperCase(Locale.ROOT)))
@@ -217,7 +218,7 @@ public enum ExchangeSource {
         }
 
         private MempoolSpaceRates getRates() {
-            String url = AppServices.isUsingProxy() ? "http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/v1/prices" : "https://mempool.space/api/v1/prices";
+            String url = AppServices.isUsingProxy() ? "http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/v1/prices" : "https://litecoinspace.org/api/v1/prices";
 
             if(log.isInfoEnabled()) {
                 log.info("Requesting exchange rates from " + url);
@@ -239,7 +240,7 @@ public enum ExchangeSource {
         @Override
         public Map<Date, Double> getHistoricalExchangeRates(Currency currency, Date start, Date end) {
             String url = AppServices.isUsingProxy() ? "http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/v1/historical-price?currency=" + currency.getCurrencyCode() :
-                    "https://mempool.space/api/v1/historical-price?currency=" + currency.getCurrencyCode();
+                    "https://litecoinspace.org/api/v1/historical-price?currency=" + currency.getCurrencyCode();
 
             if(log.isInfoEnabled()) {
                 log.info("Requesting historical exchange rates from " + url);
