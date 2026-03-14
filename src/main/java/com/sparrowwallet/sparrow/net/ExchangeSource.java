@@ -135,8 +135,9 @@ public enum ExchangeSource {
         @Override
         public Double getExchangeRate(Currency currency) {
             String currencyCode = currency.getCurrencyCode();
-            OptionalDouble optRate = getRates().rates.entrySet().stream().filter(rate -> currencyCode.equalsIgnoreCase(rate.getKey())).mapToDouble(rate -> rate.getValue().value).findFirst();
-            OptionalDouble ltcRate = getRates().rates.entrySet().stream().filter(rate -> "ltc".equalsIgnoreCase(rate.getKey())).mapToDouble(rate -> rate.getValue().value).findFirst();
+            var rates = getRates().rates.entrySet();
+            OptionalDouble optRate = rates.stream().filter(rate -> currencyCode.equalsIgnoreCase(rate.getKey())).mapToDouble(rate -> rate.getValue().value).findFirst();
+            OptionalDouble ltcRate = rates.stream().filter(rate -> "ltc".equalsIgnoreCase(rate.getKey())).mapToDouble(rate -> rate.getValue().value).findFirst();
             if(optRate.isPresent() && ltcRate.isPresent()) {
                 return optRate.getAsDouble() / ltcRate.getAsDouble();
             }
