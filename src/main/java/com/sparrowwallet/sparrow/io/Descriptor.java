@@ -38,13 +38,13 @@ public class Descriptor implements WalletImport, WalletExport {
             bufferedWriter.newLine();
             bufferedWriter.newLine();
 
-            bufferedWriter.write("# Receive descriptor (Bitcoin Core):");
+            bufferedWriter.write("# Receive descriptor (Litecoin Core):");
             bufferedWriter.newLine();
             OutputDescriptor receiveDescriptor = OutputDescriptor.getOutputDescriptor(wallet, KeyPurpose.RECEIVE, null);
             bufferedWriter.write(receiveDescriptor.toString(true));
             bufferedWriter.newLine();
             bufferedWriter.newLine();
-            bufferedWriter.write("# Change descriptor (Bitcoin Core):");
+            bufferedWriter.write("# Change descriptor (Litecoin Core):");
             bufferedWriter.newLine();
             OutputDescriptor changeDescriptor = OutputDescriptor.getOutputDescriptor(wallet, KeyPurpose.CHANGE, null);
             bufferedWriter.write(changeDescriptor.toString(true));
@@ -58,7 +58,7 @@ public class Descriptor implements WalletImport, WalletExport {
 
     @Override
     public String getWalletExportDescription() {
-        return "The output descriptor is a standardized description of the wallet compatible with Bitcoin Core, and can be used to create a watch-only copy using the Edit button on the Settings tab of a new Sparrow wallet.";
+        return "The output descriptor is a standardized description of the wallet compatible with Litecoin Core, and can be used to create a watch-only copy using the Edit button on the Settings tab of a new Sparrow wallet.";
     }
 
     @Override
@@ -83,7 +83,7 @@ public class Descriptor implements WalletImport, WalletExport {
 
     @Override
     public String getWalletImportDescription() {
-        return "Import a file containing the output descriptor of a wallet. The output descriptor is a standardized description of the wallet compatible with Bitcoin Core.";
+        return "Import a file containing the output descriptor of a wallet. The output descriptor is a standardized description of the wallet compatible with Litecoin Core.";
     }
 
     @Override

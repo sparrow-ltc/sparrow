@@ -670,7 +670,7 @@ public class SettingsController extends WalletFormController implements Initiali
                                 addAndEncryptAccounts(masterWallet, accountDiscoveryService.getValue(), key);
                                 if(accountDiscoveryService.getValue().isEmpty()) {
                                     AppServices.showAlertDialog("No Accounts Found", "No new accounts with existing transactions were found. " +
-                                                    (Config.get().getServerType() == ServerType.BITCOIN_CORE ? "Note the configured server type is Bitcoin Core, which does not support account discovery." : "Note only the next 10 accounts are scanned."),
+                                                    (Config.get().getServerType() == ServerType.BITCOIN_CORE ? "Note the configured server type is Litecoin Core, which does not support account discovery." : "Note only the next 10 accounts are scanned."),
                                             Alert.AlertType.INFORMATION, ButtonType.OK);
                                 }
                             });
@@ -710,7 +710,7 @@ public class SettingsController extends WalletFormController implements Initiali
                         addAndSaveAccounts(masterWallet, accountDiscoveryService.getValue(), null);
                         if(accountDiscoveryService.getValue().isEmpty()) {
                             AppServices.showAlertDialog("No Accounts Found", "No new accounts with existing transactions were found. " +
-                                    (Config.get().getServerType() == ServerType.BITCOIN_CORE ? "Note the configured server type is Bitcoin Core, which does not support account discovery." : "Note only the next 10 accounts are scanned."),
+                                    (Config.get().getServerType() == ServerType.BITCOIN_CORE ? "Note the configured server type is Litecoin Core, which does not support account discovery." : "Note only the next 10 accounts are scanned."),
                                     Alert.AlertType.INFORMATION, ButtonType.OK);
                         }
                     });
