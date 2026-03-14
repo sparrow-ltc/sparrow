@@ -31,7 +31,7 @@ public enum FeeRatesSource {
     MEMPOOL_SPACE("litecoinspace.org", true) {
         @Override
         public Map<Integer, Double> getBlockTargetFeeRates(Map<Integer, Double> defaultblockTargetFeeRates) {
-            String url = getApiUrl() + "v1/fees/precise";
+            String url = getApiUrl() + "v1/fees/recommended";
             return getThreeTierFeeRates(this, defaultblockTargetFeeRates, url);
         }
 
