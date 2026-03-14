@@ -48,7 +48,7 @@ public class GeneralDialog extends DialogWindow {
         Panel mainPanel = new Panel();
         mainPanel.setLayoutManager(new GridLayout(2).setHorizontalSpacing(5));
 
-        mainPanel.addComponent(new Label("Bitcoin Unit"));
+        mainPanel.addComponent(new Label("Litecoin Unit"));
         bitcoinUnit = new ComboBox<>(BitcoinUnit.values());
         mainPanel.addComponent(bitcoinUnit);
 

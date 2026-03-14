@@ -29,7 +29,7 @@
     </rowConstraints>
 
     <Form GridPane.columnIndex="0" GridPane.rowIndex="0">
-        <Fieldset inputGrow="SOMETIMES" text="Bitcoin" styleClass="wideLabelFieldSet">
+        <Fieldset inputGrow="SOMETIMES" text="Litecoin" styleClass="wideLabelFieldSet">
             <Field text="Fee rates source:">
                 <ComboBox fx:id="feeRatesSource">
                     <items>

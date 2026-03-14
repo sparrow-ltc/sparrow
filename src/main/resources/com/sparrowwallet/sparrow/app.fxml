@@ -66,7 +66,7 @@
                 </fx:define>
                 <Menu fx:id="viewMenu" mnemonicParsing="false" text="View">
                     <items>
-                        <Menu mnemonicParsing="false" text="Bitcoin Unit">
+                        <Menu mnemonicParsing="false" text="Litecoin Unit">
                             <items>
                                 <RadioMenuItem mnemonicParsing="false" text="Auto" toggleGroup="$bitcoinUnit" onAction="#setBitcoinUnit">
                                     <userData>
@@ -99,7 +99,7 @@
                                 </RadioMenuItem>
                             </items>
                         </Menu>
-                        <Menu mnemonicParsing="false" text="Bitcoin Addresses">
+                        <Menu mnemonicParsing="false" text="Litecoin Addresses">
                             <items>
                                 <CheckMenuItem fx:id="chunkAddresses" mnemonicParsing="false" text="Chunk Addresses" onAction="#chunkAddresses"/>
                                 <CheckMenuItem fx:id="hideEmptyUsedAddresses" mnemonicParsing="false" text="Hide Empty Used Addresses" onAction="#hideEmptyUsedAddresses"/>
