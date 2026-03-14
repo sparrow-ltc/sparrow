@@ -16,7 +16,7 @@
                     <ToggleGroup fx:id="walletMenu" />
                 </toggleGroup>
                 <graphic>
-                    <Glyph fontFamily="FontAwesome" icon="BTC" fontSize="20" />
+                    <Glyph fontFamily="cryptofont" icon="LTC" fontSize="20" />
                 </graphic>
                 <userData>
                     <Function fx:constant="TRANSACTIONS"/>

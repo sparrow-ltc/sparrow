@@ -4,6 +4,7 @@ import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.drongo.OsType;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.sparrow.control.WalletIcon;
+import com.sparrowwallet.sparrow.glyphfont.CryptoFont;
 import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.glyphfont.FontAwesome5Brands;
 import com.sparrowwallet.sparrow.io.Config;
@@ -111,6 +112,7 @@ public class SparrowDesktop extends Application {
     }
 
     private void initializeFonts() {
+        GlyphFontRegistry.register(new CryptoFont());
         GlyphFontRegistry.register(new FontAwesome5());
         GlyphFontRegistry.register(new FontAwesome5Brands());
         Font.loadFont(AppServices.class.getResourceAsStream("/font/FragmentMono-Regular.ttf"), 13);
