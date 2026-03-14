@@ -11,8 +11,8 @@ import java.net.URL;
 import java.util.Locale;
 
 public enum BlockExplorer {
-    MEMPOOL_SPACE("https://mempool.space"),
-    BLOCKSTREAM_INFO("https://blockstream.info"),
+    LITECOINSPACE_ORG("https://litecoinspace.org"),
+    BLOCKCHAIR_COM("https://blockchair.com/litecoin/transaction/{0}"),
     NONE("http://none");
 
     private static final Logger log = LoggerFactory.getLogger(BlockExplorer.class);
