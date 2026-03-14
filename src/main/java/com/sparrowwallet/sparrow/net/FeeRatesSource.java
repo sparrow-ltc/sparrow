@@ -28,7 +28,7 @@ public enum FeeRatesSource {
             return true;
         }
     },
-    MEMPOOL_SPACE("mempool.space", true) {
+    MEMPOOL_SPACE("litecoinspace.org", true) {
         @Override
         public Map<Integer, Double> getBlockTargetFeeRates(Map<Integer, Double> defaultblockTargetFeeRates) {
             String url = getApiUrl() + "v1/fees/precise";
@@ -60,7 +60,7 @@ public enum FeeRatesSource {
         }
 
         private String getApiUrl() {
-            String url = AppServices.isUsingProxy() ? "http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/" : "https://mempool.space/api/";
+            String url = AppServices.isUsingProxy() ? "http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/" : "https://litecoinspace.org/api/";
             if(Network.get() != Network.MAINNET && supportsNetwork(Network.get())) {
                 url = url.replace("/api/", "/" + Network.get().getName() + "/api/");
             }

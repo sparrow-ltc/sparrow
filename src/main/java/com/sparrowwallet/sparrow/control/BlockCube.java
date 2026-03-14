@@ -64,7 +64,7 @@ public class BlockCube extends Group {
         });
         this.medianFeeProperty.addListener((_, _, newValue) -> {
             medianFeeText.setText(newValue.doubleValue() < 0.0d ? "" : "~" + Math.round(Math.max(newValue.doubleValue(), 1.0d)));
-            unitsText.setText(newValue.doubleValue() < 0.0d ? "" : " s/vb");
+            unitsText.setText(newValue.doubleValue() < 0.0d ? "" : " lit/vb");
             double medianFeeWidth = TextUtils.computeTextWidth(medianFeeText.getFont(), medianFeeText.getText(), 0.0d);
             double unitsWidth = TextUtils.computeTextWidth(unitsText.getFont(), unitsText.getText(), 0.0d);
             medianFeeTextFlow.setTranslateX((CUBE_SIZE - (medianFeeWidth + unitsWidth)) / 2);
@@ -77,7 +77,7 @@ public class BlockCube extends Group {
             elapsedProperty.set(getElapsed(newValue.longValue()));
         });
         this.elapsedProperty.addListener((_, _, newValue) -> {
-            elapsedText.setText(isConfirmed() ? newValue : "In ~10m");
+            elapsedText.setText(isConfirmed() ? newValue : "In ~3m");
             elapsedText.setX((CUBE_SIZE - elapsedText.getLayoutBounds().getWidth()) / 2);
         });
         this.heightProperty.addListener((_, _, newValue) -> {
