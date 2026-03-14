@@ -891,7 +891,7 @@ public class SendController extends WalletFormController implements Initializabl
 
     private void setFeeRate(Double feeRateAmt) {
         UnitFormat format = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
-        feeRate.setText(format.getCurrencyFormat().format(feeRateAmt) + (cpfpFeeRate.isVisible() ? "" : " sats/vB"));
+        feeRate.setText(format.getCurrencyFormat().format(feeRateAmt) + (cpfpFeeRate.isVisible() ? "" : " lits/vB"));
         setFeeRatePriority(feeRateAmt);
     }
 
@@ -910,10 +910,10 @@ public class SendController extends WalletFormController implements Initializabl
             if(thisRate > effectiveRate) {
                 UnitFormat format = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
                 String strEffectiveRate = format.getCurrencyFormat().format(effectiveRate);
-                Tooltip tooltip = new Tooltip("CPFP (Child Pays For Parent)\n" + strEffectiveRate + " sats/vB effective rate");
+                Tooltip tooltip = new Tooltip("CPFP (Child Pays For Parent)\n" + strEffectiveRate + " lits/vB effective rate");
                 cpfpFeeRate.setTooltip(tooltip);
                 cpfpFeeRate.setVisible(true);
-                cpfpFeeRate.setText(strEffectiveRate + " sats/vB (CPFP)");
+                cpfpFeeRate.setText(strEffectiveRate + " lits/vB (CPFP)");
             } else {
                 cpfpFeeRate.setVisible(false);
             }
