@@ -40,8 +40,8 @@ public class MwebStatusChecker {
                     text = "Synchronizing MWEB... (" + pct + "%)";
                 }
             } catch (Exception _) {
-                return;
             }
+            if (text.isEmpty()) return;
             var event = new StatusEvent(text);
             Platform.runLater(() -> EventManager.get().post(event));
         }, 0, 2, TimeUnit.SECONDS);
