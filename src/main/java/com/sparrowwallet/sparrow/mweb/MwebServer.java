@@ -13,6 +13,7 @@ import java.nio.file.Files;
 public class MwebServer {
     public static RpcGrpc.RpcBlockingStub stub;
     public static RpcGrpc.RpcStub stubAsync;
+    private static MwebStatusChecker statusChecker;
 
     public static void start() {
         var chain = Network.get().getName();
@@ -30,5 +31,6 @@ public class MwebServer {
         var channel = ManagedChannelBuilder.forAddress("localhost", port).usePlaintext().build();
         stub = RpcGrpc.newBlockingStub(channel);
         stubAsync = RpcGrpc.newStub(channel);
+        statusChecker = new MwebStatusChecker(stub);
     }
 }
