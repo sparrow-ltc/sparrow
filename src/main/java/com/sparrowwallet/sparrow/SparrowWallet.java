@@ -6,6 +6,7 @@ import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.instance.InstanceException;
 import com.sparrowwallet.sparrow.instance.InstanceList;
+import com.sparrowwallet.sparrow.mweb.MwebServer;
 import com.sparrowwallet.sparrow.terminal.SparrowTerminal;
 import com.sun.javafx.application.PlatformImpl;
 import org.slf4j.Logger;
@@ -109,6 +110,9 @@ public class SparrowWallet {
         if(args.terminal) {
             Interface.set(Interface.TERMINAL);
         }
+
+        var dataDir = Storage.getSparrowDir().toPath().resolve("mweb");
+        int port = MwebServer.start(Network.get().getName(), dataDir);
 
         try {
             if(Interface.get() == Interface.TERMINAL) {
