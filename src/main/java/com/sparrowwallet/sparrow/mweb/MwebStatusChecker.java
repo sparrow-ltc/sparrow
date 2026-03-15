@@ -47,8 +47,11 @@ public class MwebStatusChecker {
         }, 0, 2, TimeUnit.SECONDS);
     }
 
-    public void stop() throws InterruptedException {
-        exec.shutdown();
-        exec.awaitTermination(5, TimeUnit.SECONDS);
+    public void stop() {
+        try {
+            exec.shutdown();
+            exec.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException _) {
+        }
     }
 }
