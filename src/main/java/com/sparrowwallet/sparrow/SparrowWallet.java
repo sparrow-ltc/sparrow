@@ -111,8 +111,7 @@ public class SparrowWallet {
             Interface.set(Interface.TERMINAL);
         }
 
-        var dataDir = Storage.getSparrowDir().toPath().resolve("mweb");
-        int port = MwebServer.start(Network.get().getName(), dataDir);
+        int port = MwebServer.start();
 
         try {
             if(Interface.get() == Interface.TERMINAL) {
