@@ -46,6 +46,9 @@ dependencies {
     implementation(project(':lark'))
     implementation('com.google.guava:guava:33.5.0-jre')
     implementation('com.google.code.gson:gson:2.13.2')
+    implementation('com.google.protobuf:protobuf-java:4.34.0')
+    implementation('io.grpc:grpc-stub:1.79.0')
+    implementation('io.grpc:grpc-protobuf:1.79.0')
     implementation('com.h2database:h2:2.1.214')
     implementation('com.zaxxer:HikariCP:7.0.2') {
         exclude group: 'org.slf4j'
@@ -563,6 +566,7 @@ extraJavaModuleInfo {
     module('com.jcraft:jzlib', 'com.jcraft.jzlib') {
         exports('com.jcraft.jzlib')
     }
+    failOnMissingModuleInfo.set(false)
 }
 
 kmpTorResourceFilterJar {

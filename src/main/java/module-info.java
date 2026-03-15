@@ -12,8 +12,11 @@ open module com.sparrowwallet.sparrow {
     requires tornadofx.controls;
     requires com.sparrowwallet.drongo;
     requires com.google.common;
+    requires com.google.protobuf;
     requires com.google.zxing;
     requires com.google.zxing.javase;
+    requires io.grpc;
+    requires io.grpc.stub;
     requires simple.json.rpc.client;
     requires simple.json.rpc.server;
     requires simple.json.rpc.core;
