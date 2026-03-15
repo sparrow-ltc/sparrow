@@ -111,7 +111,7 @@ public class SparrowWallet {
             Interface.set(Interface.TERMINAL);
         }
 
-        MwebServer.start();
+        MwebServer.initialize();
 
         try {
             if(Interface.get() == Interface.TERMINAL) {
