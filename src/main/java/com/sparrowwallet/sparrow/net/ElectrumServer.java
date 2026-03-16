@@ -1716,6 +1716,10 @@ public class ElectrumServer {
                 return false;
             }
 
+            if(wallet.getScriptType() == ScriptType.MWEB) {
+                return true;
+            }
+
             WalletLock walletLock = walletLocks.computeIfAbsent(wallet.hashCode(), w -> new WalletLock());
             synchronized(walletLock) {
                 if(!walletLock.initialized) {
