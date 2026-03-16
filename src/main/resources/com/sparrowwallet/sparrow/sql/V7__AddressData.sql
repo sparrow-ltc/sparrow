@@ -1,1 +1,1 @@
-alter table walletNode add column addressData varbinary(32) after parent;
+alter table walletNode add column addressData varbinary(66) after parent;
