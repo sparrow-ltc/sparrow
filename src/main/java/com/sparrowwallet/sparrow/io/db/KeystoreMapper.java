@@ -3,6 +3,7 @@ package com.sparrowwallet.sparrow.io.db;
 import com.sparrowwallet.drongo.ExtendedKey;
 import com.sparrowwallet.drongo.KeyDerivation;
 import com.sparrowwallet.drongo.bip47.PaymentCode;
+import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.crypto.EncryptedData;
 import com.sparrowwallet.drongo.crypto.EncryptionType;
 import com.sparrowwallet.drongo.wallet.*;
@@ -24,6 +25,8 @@ public class KeystoreMapper implements RowMapper<Keystore> {
         keystore.setWalletModel(WalletModel.values()[rs.getInt("keystore.walletModel")]);
         keystore.setKeyDerivation(new KeyDerivation(rs.getString("keystore.masterFingerprint"), rs.getString("keystore.derivationPath")));
         keystore.setExtendedPublicKey(rs.getString("keystore.extendedPublicKey") == null ? null : ExtendedKey.fromDescriptor(rs.getString("keystore.extendedPublicKey")));
+        keystore.setMwebScanPrivateKey(rs.getBytes("keystore.mwebScanPrivateKey") == null ? null : ECKey.fromPrivate(rs.getBytes("keystore.mwebScanPrivateKey")));
+        keystore.setMwebSpendPublicKey(rs.getBytes("keystore.mwebSpendPublicKey") == null ? null : ECKey.fromPublicOnly(rs.getBytes("keystore.mwebSpendPublicKey")));
         keystore.setExternalPaymentCode(rs.getString("keystore.externalPaymentCode") == null ? null : PaymentCode.fromString(rs.getString("keystore.externalPaymentCode")));
         keystore.setDeviceRegistration(rs.getBytes("keystore.deviceRegistration"));
 
