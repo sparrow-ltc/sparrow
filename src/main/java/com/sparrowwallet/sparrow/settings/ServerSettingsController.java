@@ -696,7 +696,7 @@ public class ServerSettingsController extends SettingsDetailController {
         } else if(reason != null && (reason.startsWith("Cannot connect to hidden service"))) {
             reason += " on the server. Check that the onion address and port are correct, and that both Tor and the Electrum server are running on the node. Usually SSL is not enabled, and the port is 50001.";
         } else if(reason != null && (reason.startsWith("Cannot find Litecoin Core cookie file at"))) {
-            reason += "\n\nMake sure server=1 has been added to bitcoin.conf";
+            reason += "\n\nMake sure server=1 has been added to litecoin.conf";
         }
 
         testResults.setText("Could not connect:\n\n" + reason);

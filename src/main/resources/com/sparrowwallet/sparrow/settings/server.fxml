@@ -46,14 +46,6 @@
                                 <ServerType fx:constant="PUBLIC_ELECTRUM_SERVER"/>
                             </userData>
                         </ToggleButton>
-                        <ToggleButton text="Litecoin Core" toggleGroup="$serverTypeToggleGroup">
-                            <graphic>
-                                <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="12" icon="TOGGLE_ON" styleClass="bitcoin-core" />
-                            </graphic>
-                            <userData>
-                                <ServerType fx:constant="BITCOIN_CORE"/>
-                            </userData>
-                        </ToggleButton>
                         <ToggleButton text="Private Electrum" toggleGroup="$serverTypeToggleGroup">
                             <graphic>
                                 <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="12" icon="TOGGLE_ON" styleClass="private-electrum" />

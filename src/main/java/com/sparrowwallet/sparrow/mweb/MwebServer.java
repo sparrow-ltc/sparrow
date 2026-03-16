@@ -54,8 +54,14 @@ public class MwebServer {
     }
 
     private void stop() {
-        statusChecker.stop();
-        MwebLibrary.INSTANCE.stop(port);
+        if (statusChecker != null) {
+            statusChecker.stop();
+            statusChecker = null;
+        }
+        if (port != 0) {
+            MwebLibrary.INSTANCE.stop(port);
+            port = 0;
+        }
     }
 
     @Subscribe
