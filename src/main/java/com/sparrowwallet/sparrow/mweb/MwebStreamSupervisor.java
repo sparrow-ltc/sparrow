@@ -7,7 +7,7 @@ import com.sparrowwallet.drongo.wallet.Keystore;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
-import com.sparrowwallet.sparrow.event.WalletOpenedEvent;
+import com.sparrowwallet.sparrow.event.OpenWalletsEvent;
 import com.sparrowwallet.sparrow.mweb.proto.RpcGrpc;
 import com.sparrowwallet.sparrow.mweb.proto.Utxo;
 import com.sparrowwallet.sparrow.mweb.proto.UtxosRequest;
@@ -18,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 
 public class MwebStreamSupervisor {
@@ -41,13 +42,19 @@ public class MwebStreamSupervisor {
     }
 
     @Subscribe
-    public void walletOpened(WalletOpenedEvent walletOpenedEvent) {
-        addWallet(walletOpenedEvent.getWallet());
-    }
-
-    public void walletClosed(Wallet wallet) {
-        var ctx = wallets.remove(wallet);
-        if (ctx != null) ctx.cancel(null);
+    public void openWallets(OpenWalletsEvent event) {
+        var openWallets = new HashSet<>(event.getWallets());
+        var iterator = wallets.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            if (!openWallets.contains(entry.getKey())) {
+                entry.getValue().cancel(null);
+                iterator.remove();
+            }
+        }
+        for (var wallet : openWallets) {
+            addWallet(wallet);
+        }
     }
 
     private void addWallet(Wallet wallet) {
