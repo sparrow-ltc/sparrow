@@ -36,6 +36,7 @@ public class MwebStreamSupervisor {
     }
 
     public void stop() {
+        EventManager.get().unregister(this);
         for (var ctx : wallets.values()) {
             ctx.cancel(null);
         }
@@ -65,8 +66,13 @@ public class MwebStreamSupervisor {
 
     private Context.CancellableContext startStream(Wallet wallet) {
         Keystore keystore = wallet.getKeystores().getFirst();
+        int height = 0;
+        for (var txn : wallet.getTransactions().values()) {
+            height = Math.max(height, txn.getHeight());
+        }
         UtxosRequest request = UtxosRequest.newBuilder()
                 .setScanSecret(ByteString.copyFrom(keystore.getMwebScanPrivateKey().getPrivKeyBytes()))
+                .setFromHeight(Math.max(0, height - 100))
                 .build();
 
         var context = Context.current().withCancellation();
