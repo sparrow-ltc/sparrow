@@ -19,6 +19,7 @@ public class MwebServer {
     public RpcGrpc.RpcStub stubAsync;
     private int port;
     private MwebStatusChecker statusChecker;
+    private MwebStreamSupervisor streamSupervisor;
 
     private static MwebServer INSTANCE;
 
@@ -51,9 +52,14 @@ public class MwebServer {
         stub = RpcGrpc.newBlockingStub(channel);
         stubAsync = RpcGrpc.newStub(channel);
         statusChecker = new MwebStatusChecker(stub);
+        streamSupervisor = new MwebStreamSupervisor(stubAsync);
     }
 
     private void stop() {
+        if (streamSupervisor != null) {
+            streamSupervisor.stop();
+            streamSupervisor = null;
+        }
         if (statusChecker != null) {
             statusChecker.stop();
             statusChecker = null;
