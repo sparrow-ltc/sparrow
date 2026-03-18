@@ -83,6 +83,17 @@ public class MwebStreamSupervisor {
 
         var context = Context.current().withCancellation();
         context.run(() -> stub.utxos(request, new StreamObserver<>() {
+            private WalletNode getAddressNode(Address address) {
+                for (var purposeNode : wallet.getPurposeNodes()) {
+                    for (var node : purposeNode.getChildren()) {
+                        if (node.getAddress().equals(address)) {
+                            return node;
+                        }
+                    }
+                }
+                return null;
+            }
+
             @Override
             public void onNext(Utxo utxo) {
                 Address address;
@@ -91,26 +102,20 @@ public class MwebStreamSupervisor {
                 } catch (InvalidAddressException _) {
                     return;
                 }
-                WalletNode affectedNode = null;
-                for (var purposeNode : wallet.getPurposeNodes()) {
-                    for (var node : purposeNode.getChildren()) {
-                        if (node.getAddress().equals(address)) {
-                            affectedNode = node;
-                            break;
-                        }
-                    }
-                    if (affectedNode != null) break;
-                }
-                if (affectedNode == null) return;
+                var node = getAddressNode(address);
+                if (node == null) return;
                 var tx = new Transaction();
                 tx.addInput(Sha256Hash.wrap(utxo.getOutputId()), 0, new Script(List.of()));
                 tx.addOutput(utxo.getValue(), address);
                 var txn = new BlockTransaction(tx.getTxId(), utxo.getHeight(), new Date(utxo.getBlockTime() * 1000L), 0L, tx);
-                var txnhi = new BlockTransactionHashIndex(txn.getHash(), txn.getHeight(), txn.getDate(), txn.getFee(), 0, utxo.getValue());
-                wallet.updateTransactions(Map.of(txn.getHash(), txn));
-                affectedNode.updateTransactionOutputs(wallet, Set.of(txnhi));
-                var event = new WalletHistoryChangedEvent(wallet, storage, List.of(affectedNode), List.of());
-                Platform.runLater(() -> EventManager.get().post(event));
+                Platform.runLater(() -> {
+                    var txos = new TreeSet<>(node.getTransactionOutputs());
+                    txos.removeIf(txo -> txo.getHash().equals(txn.getHash()));
+                    txos.add(new BlockTransactionHashIndex(txn.getHash(), txn.getHeight(), txn.getDate(), txn.getFee(), 0, utxo.getValue()));
+                    node.updateTransactionOutputs(wallet, txos);
+                    wallet.updateTransactions(Map.of(txn.getHash(), txn));
+                    EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, List.of(node), List.of()));
+                });
             }
 
             @Override
