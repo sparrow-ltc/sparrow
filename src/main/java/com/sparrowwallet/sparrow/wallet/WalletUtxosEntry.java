@@ -1,5 +1,6 @@
 package com.sparrowwallet.sparrow.wallet;
 
+import com.sparrowwallet.drongo.address.MwebAddress;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.drongo.wallet.WalletNode;
 import com.sparrowwallet.sparrow.io.Config;
@@ -36,6 +37,7 @@ public class WalletUtxosEntry extends Entry {
 
         for(Entry entry : getChildren()) {
             UtxoEntry utxoEntry = (UtxoEntry)entry;
+            if(utxoEntry.getAddress() instanceof MwebAddress) continue;
             String address = utxoEntry.getAddress().toString();
 
             UtxoEntry duplicate = addressMap.get(address);
