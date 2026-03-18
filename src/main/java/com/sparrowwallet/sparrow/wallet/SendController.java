@@ -19,6 +19,7 @@ import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Storage;
+import com.sparrowwallet.sparrow.mweb.MwebFeeEstimator;
 import com.sparrowwallet.sparrow.net.*;
 import com.sparrowwallet.sparrow.paynym.PayNym;
 import com.sparrowwallet.sparrow.paynym.PayNymService;
@@ -622,7 +623,7 @@ public class SendController extends WalletFormController implements Initializabl
                 TransactionParameters params = new TransactionParameters(getUtxoSelectors(payments), getTxoFilters(),
                         payments, opReturnsList, excludedChangeNodes,
                         feeRate, getMinimumFeeRate(), minRelayFeeRate, userFee,
-                        currentBlockHeight, groupByAddress, includeMempoolOutputs, allowRbf);
+                        currentBlockHeight, groupByAddress, includeMempoolOutputs, allowRbf, new MwebFeeEstimator());
                 walletTransactionService = new WalletTransactionService(wallet, params, replacedTransaction);
                 walletTransactionService.setOnSucceeded(event -> {
                     if(!walletTransactionService.isIgnoreResult()) {
@@ -1238,7 +1239,7 @@ public class SendController extends WalletFormController implements Initializabl
             boolean includeMempoolOutputs = Config.get().isIncludeMempoolOutputs();
 
             TransactionParameters params = new TransactionParameters(utxoSelectors, getTxoFilters(), walletTransaction.getPayments(), List.of(blindedPaymentCode),
-                    excludedChangeNodes, feeRate, getMinimumFeeRate(), minRelayFeeRate, userFee, currentBlockHeight, groupByAddress, includeMempoolOutputs, true);
+                    excludedChangeNodes, feeRate, getMinimumFeeRate(), minRelayFeeRate, userFee, currentBlockHeight, groupByAddress, includeMempoolOutputs, true, new MwebFeeEstimator());
             WalletTransaction finalWalletTx = decryptedWallet.createWalletTransaction(params);
             PSBT psbt = finalWalletTx.createPSBT();
             decryptedWallet.sign(psbt);
