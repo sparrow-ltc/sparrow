@@ -14,6 +14,7 @@ import com.sparrowwallet.sparrow.control.*;
 import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Storage;
+import com.sparrowwallet.sparrow.mweb.MwebFeeEstimator;
 import com.sparrowwallet.sparrow.net.ElectrumServer;
 import com.sparrowwallet.sparrow.wallet.Entry;
 import com.sparrowwallet.sparrow.wallet.TransactionEntry;
@@ -625,7 +626,7 @@ public class PayNymController {
         List<TxoFilter> txoFilters = List.of(new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(wallet));
 
         TransactionParameters params = new TransactionParameters(utxoSelectors, txoFilters, payments, opReturns, Collections.emptySet(),
-                feeRate, minimumFeeRate, minRelayFeeRate, null, AppServices.getCurrentBlockHeight(), groupByAddress, includeMempoolOutputs, true);
+                feeRate, minimumFeeRate, minRelayFeeRate, null, AppServices.getCurrentBlockHeight(), groupByAddress, includeMempoolOutputs, true, new MwebFeeEstimator());
         return wallet.createWalletTransaction(params);
     }
 
