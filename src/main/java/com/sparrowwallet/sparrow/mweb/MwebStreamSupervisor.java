@@ -4,7 +4,6 @@ import com.google.common.eventbus.Subscribe;
 import com.google.protobuf.ByteString;
 import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.address.InvalidAddressException;
-import com.sparrowwallet.drongo.address.MwebAddress;
 import com.sparrowwallet.drongo.protocol.Script;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.protocol.Sha256Hash;
@@ -98,17 +97,18 @@ public class MwebStreamSupervisor {
             public void onNext(Utxo utxo) {
                 Address address;
                 try {
-                    address = MwebAddress.fromString(utxo.getAddress());
+                    address = Address.fromString(utxo.getAddress());
                 } catch (InvalidAddressException _) {
                     return;
                 }
-                var node = getAddressNode(address);
-                if (node == null) return;
                 var tx = new Transaction();
-                tx.addInput(Sha256Hash.wrap(utxo.getOutputId()), 0, new Script(List.of()));
                 tx.addOutput(utxo.getValue(), address);
+                tx.addMwebOutputId(Sha256Hash.wrap(utxo.getOutputId()));
+                tx.setMwebTxId(Sha256Hash.wrap(utxo.getOutputId()));
                 var txn = new BlockTransaction(tx.getTxId(), utxo.getHeight(), new Date(utxo.getBlockTime() * 1000L), 0L, tx);
                 Platform.runLater(() -> {
+                    var node = getAddressNode(address);
+                    if (node == null) return;
                     var txos = new TreeSet<>(node.getTransactionOutputs());
                     txos.removeIf(txo -> txo.getHash().equals(txn.getHash()));
                     txos.add(new BlockTransactionHashIndex(txn.getHash(), txn.getHeight(), txn.getDate(), txn.getFee(), 0, utxo.getValue()));
