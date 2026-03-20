@@ -3,6 +3,7 @@ package com.sparrowwallet.sparrow.mweb;
 import com.google.common.eventbus.Subscribe;
 import com.google.protobuf.ByteString;
 import com.sparrowwallet.drongo.Network;
+import com.sparrowwallet.drongo.crypto.ChildNumber;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.psbt.PSBT;
 import com.sparrowwallet.drongo.psbt.PSBTParseException;
@@ -14,6 +15,7 @@ import com.sparrowwallet.sparrow.event.DisconnectionEvent;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.mweb.proto.CreateRequest;
 import com.sparrowwallet.sparrow.mweb.proto.PsbtAddInputRequest;
+import com.sparrowwallet.sparrow.mweb.proto.PsbtSignRequest;
 import com.sparrowwallet.sparrow.mweb.proto.RpcGrpc;
 import io.grpc.ManagedChannelBuilder;
 
@@ -116,25 +118,50 @@ public class MwebServer {
     }
 
     public PSBT psbtAddInputs(PSBT psbt, WalletTransaction transaction, double feeRate) {
-        var psbtB64 = psbt.toBase64String();
         for (var entry : transaction.getSelectedUtxos().entrySet()) {
             var wallet = entry.getValue().getWallet();
             if (wallet.getScriptType() == ScriptType.MWEB) {
                 var keystore = wallet.getKeystores().getFirst();
                 var resp = stub.psbtAddInput(PsbtAddInputRequest.newBuilder()
-                        .setPsbtB64(psbtB64)
+                        .setPsbtB64(psbt.toBase64String())
                         .setScanSecret(ByteString.copyFrom(keystore.getMwebScanPrivateKey().getPrivKeyBytes()))
                         .setOutputId(MwebUtils.getOutputId(wallet, entry.getKey()).toString())
                         .setAddressIndex(MwebUtils.getAddressIndex(entry.getValue()))
                         .setFeeRatePerKb((long)Math.ceil(feeRate * 1000))
                         .build());
-                psbtB64 = resp.getPsbtB64();
+                try {
+                    psbt = PSBT.fromString(resp.getPsbtB64());
+                } catch (PSBTParseException _) {
+                }
+                var psbtInput = psbt.getPsbtInputs().getLast();
+                psbtInput.setMwebMasterScanPubKey(keystore.getMwebScanPrivateKey());
+                psbtInput.setMwebMasterScanKeyDerivation(keystore.getKeyDerivation().extend(new ChildNumber(0, true)));
             }
         }
-        try {
-            return PSBT.fromString(psbtB64);
-        } catch (PSBTParseException _) {
-            return psbt;
+        return psbt;
+    }
+
+    public PSBT psbtSign(PSBT psbt, Keystore keystore) throws MnemonicException, PSBTParseException {
+        var der = keystore.getKeyDerivation().extend(new ChildNumber(1, true));
+        var spendKey = keystore.getExtendedPrivateKey().getKey(der.getDerivation());
+        var resp = stub.psbtSign(PsbtSignRequest.newBuilder()
+                .setPsbtB64(psbt.toBase64String())
+                .setScanSecret(ByteString.copyFrom(keystore.getMwebScanPrivateKey().getPrivKeyBytes()))
+                .setSpendSecret(ByteString.copyFrom(spendKey.getPrivKeyBytes()))
+                .build());
+        var psbt2 = PSBT.fromString(resp.getPsbtB64());
+        for (int i = 0; i < psbt.getInputCount(); i++) {
+            var psbtInput = psbt.getPsbtInputs().get(i);
+            if (psbtInput.isMweb()) {
+                psbt2.getPsbtInputs().get(i).setMwebAmount(psbtInput.getMwebAmount());
+            }
         }
+        for (int i = 0; i < psbt.getOutputCount(); i++) {
+            var psbtOutput = psbt.getPsbtOutputs().get(i);
+            if (psbtOutput.isMweb()) {
+                psbt2.getPsbtOutputs().get(i).setMwebStealthAddress(psbtOutput.getMwebStealthAddress());
+            }
+        }
+        return psbt2;
     }
 }

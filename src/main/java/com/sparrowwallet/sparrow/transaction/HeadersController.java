@@ -24,6 +24,7 @@ import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Device;
 import com.sparrowwallet.sparrow.io.bbqr.BBQR;
 import com.sparrowwallet.sparrow.io.bbqr.BBQRType;
+import com.sparrowwallet.sparrow.mweb.MwebServer;
 import com.sparrowwallet.sparrow.net.ElectrumServer;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.payjoin.Payjoin;
@@ -1141,6 +1142,12 @@ public class HeadersController extends TransactionFormController implements Init
             if(!silentPayments.isEmpty()) {
                 EventManager.get().post(new TransactionOutputsChangedEvent(headersForm.getTransaction()));
             }
+            var psbt = MwebServer.get().psbtSign(headersForm.getPsbt(), unencryptedWallet.getKeystores().getFirst());
+            if(psbt.isFinalized()) {
+                headersForm.getTransactionData().setPsbt(psbt);
+            } else {
+                headersForm.getPsbt().combine(psbt);
+            }
             unencryptedWallet.sign(signingNodes);
             updateSignedKeystores(headersForm.getSigningWallet());
         } catch(Exception e) {
@@ -1191,9 +1198,11 @@ public class HeadersController extends TransactionFormController implements Init
     }
 
     private void finalizePSBT() {
-        if(headersForm.getPsbt() != null && headersForm.getPsbt().isSigned() && !headersForm.getPsbt().isFinalized()) {
+        if(headersForm.getPsbt() != null && headersForm.getPsbt().isSigned()) {
             try {
-                headersForm.getSigningWallet().finalise(headersForm.getPsbt());
+                if(!headersForm.getPsbt().isFinalized()) {
+                    headersForm.getSigningWallet().finalise(headersForm.getPsbt());
+                }
                 EventManager.get().post(new PSBTFinalizedEvent(headersForm.getPsbt()));
             } catch(IllegalArgumentException e) {
                 AppServices.showErrorDialog("Cannot finalize PSBT", e.getMessage());
