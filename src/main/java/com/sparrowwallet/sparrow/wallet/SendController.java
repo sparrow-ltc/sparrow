@@ -20,6 +20,7 @@ import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.mweb.MwebFeeEstimator;
+import com.sparrowwallet.sparrow.mweb.MwebServer;
 import com.sparrowwallet.sparrow.net.*;
 import com.sparrowwallet.sparrow.paynym.PayNym;
 import com.sparrowwallet.sparrow.paynym.PayNymService;
@@ -1169,6 +1170,7 @@ public class SendController extends WalletFormController implements Initializabl
         addWalletTransactionNodes();
         walletForm.setCreatedWalletTransaction(walletTransaction);
         PSBT psbt = walletTransaction.createPSBT();
+        psbt = MwebServer.get().psbtAddInputs(psbt, walletTransaction, getUserFeeRate());
         EventManager.get().post(new ViewPSBTEvent(createButton.getScene().getWindow(), walletTransaction.getPayments().get(0).getLabel(), null, psbt));
     }
 
