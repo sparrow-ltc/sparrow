@@ -2,7 +2,6 @@ package com.sparrowwallet.sparrow.mweb;
 
 import com.google.common.eventbus.Subscribe;
 import com.google.protobuf.ByteString;
-import com.sparrowwallet.drongo.KeyPurpose;
 import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.wallet.BlockTransactionHashIndex;
@@ -94,29 +93,15 @@ public class MwebServer {
                               List<WalletTransaction.Output> outputs, double feeRate, boolean dryRun) {
         var tx = new Transaction();
         for (var entry : utxos.entrySet()) {
-            var utxo = entry.getKey();
-            if (wallet.getScriptType() != ScriptType.MWEB) {
-                tx.addInput(utxo.getHash(), utxo.getIndex(), new Script(List.of()));
-                continue;
+            var hash = entry.getKey().getHash();
+            var index = entry.getKey().getIndex();
+            if (wallet.getScriptType() == ScriptType.MWEB) {
+                hash = MwebUtils.getOutputId(wallet, entry.getKey());
+                index = MwebUtils.getAddressIndex(entry.getValue());
             }
-            var prevTx = wallet.getWalletTransaction(utxo.getHash()).getTransaction();
-            var prevTxOut = prevTx.getOutputs().get((int)utxo.getIndex());
-            var mwebOutputs = prevTx.getOutputs().stream().filter(out ->
-                    ScriptType.MWEB.isScriptType(out.getScript())).toList();
-            int index = mwebOutputs.indexOf(prevTxOut), addressIndex = 0;
-            if (entry.getValue().getKeyPurpose() == KeyPurpose.RECEIVE) {
-                addressIndex = entry.getValue().getDerivation().getLast().i() + 1;
-            }
-            tx.addInput(prevTx.getMwebOutputId(index), addressIndex, new Script(List.of()));
+            tx.addInput(hash, index, new Script(List.of()));
         }
-        for (var output : outputs) {
-            var out = output.getTransactionOutput();
-            if (ScriptType.MWEB.isScriptType(out.getScript())) {
-                var pubKeys = ScriptType.MWEB.getHashFromScript(out.getScript());
-                out = new TransactionOutput(tx, out.getValue(), pubKeys);
-            }
-            tx.addOutput(out);
-        }
+        outputs.forEach(out -> tx.addOutput(MwebUtils.adjustScript(out.getTransactionOutput())));
         var keystore = wallet.getKeystores().getFirst();
         var resp = stub.create(CreateRequest.newBuilder()
                 .setRawTx(ByteString.copyFrom(tx.bitcoinSerialize()))
@@ -125,10 +110,8 @@ public class MwebServer {
                 .setFeeRatePerKb((long)Math.ceil(feeRate * 1000))
                 .setDryRun(dryRun)
                 .build());
-        tx = new Transaction(resp.getRawTx().toByteArray());
-        for (var outputId : resp.getOutputIdList()) {
-            tx.addMwebOutputId(Sha256Hash.wrap(outputId));
-        }
-        return tx;
+        var tx2 = new Transaction(resp.getRawTx().toByteArray());
+        resp.getOutputIdList().forEach(outputId -> tx2.addMwebOutputId(Sha256Hash.wrap(outputId)));
+        return tx2;
     }
 }
