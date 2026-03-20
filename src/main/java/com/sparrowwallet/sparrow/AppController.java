@@ -2098,6 +2098,28 @@ public class AppController implements Initializable {
             }
             controller.initializeView();
 
+            if(psbt != null) {
+                var tx = transactionData.getTransaction();
+                var tx2 = new Transaction();
+                tx2.setVersion(tx.getVersion());
+                tx2.setLocktime(tx.getLocktime());
+                for (var in : tx.getInputs()) {
+                    var hash = in.getOutpoint().getHash();
+                    var node = transactionData.getWallet().getWalletMwebOutputIds().get(hash);
+                    if (node != null) {
+                        for (var utxo : node.getUnspentTransactionOutputs()) {
+                            if (MwebUtils.getOutputId(node.getWallet(), utxo).equals(hash)) {
+                                var op = new TransactionOutPoint(utxo.getHash(), utxo.getIndex());
+                                in = new TransactionInput(tx2, op, new byte[0]);
+                            }
+                        }
+                    }
+                    tx2.addInput(in);
+                }
+                tx.getOutputs().forEach(tx2::addOutput);
+                transactionData.setTransaction(tx2);
+            }
+
             TabData tabData = new TransactionTabData(TabData.TabType.TRANSACTION, file, transactionData);
             tab.setUserData(tabData);
 

@@ -62,6 +62,10 @@ public class TransactionData {
         return psbt;
     }
 
+    public void setPsbt(PSBT psbt) {
+        this.psbt = psbt;
+    }
+
     public BlockTransaction getBlockTransaction() {
         return blockTransaction;
     }
