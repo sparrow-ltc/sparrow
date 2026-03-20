@@ -4,6 +4,8 @@ import com.google.common.eventbus.Subscribe;
 import com.google.protobuf.ByteString;
 import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.drongo.protocol.*;
+import com.sparrowwallet.drongo.psbt.PSBT;
+import com.sparrowwallet.drongo.psbt.PSBTParseException;
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
@@ -11,6 +13,7 @@ import com.sparrowwallet.sparrow.event.ConnectionEvent;
 import com.sparrowwallet.sparrow.event.DisconnectionEvent;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.mweb.proto.CreateRequest;
+import com.sparrowwallet.sparrow.mweb.proto.PsbtAddInputRequest;
 import com.sparrowwallet.sparrow.mweb.proto.RpcGrpc;
 import io.grpc.ManagedChannelBuilder;
 
@@ -110,5 +113,28 @@ public class MwebServer {
         var tx2 = new Transaction(resp.getRawTx().toByteArray());
         resp.getOutputIdList().forEach(outputId -> tx2.addMwebOutputId(Sha256Hash.wrap(outputId)));
         return tx2;
+    }
+
+    public PSBT psbtAddInputs(PSBT psbt, WalletTransaction transaction, double feeRate) {
+        var psbtB64 = psbt.toBase64String();
+        for (var entry : transaction.getSelectedUtxos().entrySet()) {
+            var wallet = entry.getValue().getWallet();
+            if (wallet.getScriptType() == ScriptType.MWEB) {
+                var keystore = wallet.getKeystores().getFirst();
+                var resp = stub.psbtAddInput(PsbtAddInputRequest.newBuilder()
+                        .setPsbtB64(psbtB64)
+                        .setScanSecret(ByteString.copyFrom(keystore.getMwebScanPrivateKey().getPrivKeyBytes()))
+                        .setOutputId(MwebUtils.getOutputId(wallet, entry.getKey()).toString())
+                        .setAddressIndex(MwebUtils.getAddressIndex(entry.getValue()))
+                        .setFeeRatePerKb((long)Math.ceil(feeRate * 1000))
+                        .build());
+                psbtB64 = resp.getPsbtB64();
+            }
+        }
+        try {
+            return PSBT.fromString(psbtB64);
+        } catch (PSBTParseException _) {
+            return psbt;
+        }
     }
 }
