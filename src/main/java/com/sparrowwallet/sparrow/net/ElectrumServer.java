@@ -17,10 +17,12 @@ import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.Server;
+import com.sparrowwallet.sparrow.mweb.MwebServer;
 import com.sparrowwallet.sparrow.net.cormorant.Cormorant;
 import com.sparrowwallet.sparrow.net.cormorant.bitcoind.CormorantBitcoindException;
 import com.sparrowwallet.sparrow.paynym.PayNym;
 import com.sparrowwallet.sparrow.paynym.PayNymService;
+import io.grpc.StatusRuntimeException;
 import javafx.application.Platform;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.SimpleIntegerProperty;
@@ -1130,7 +1132,11 @@ public class ElectrumServer {
 
             return receivedTxid;
         } catch(ElectrumServerRpcException | IllegalStateException e) {
-            throw new ServerException(e.getMessage(), e);
+            try {
+                return MwebServer.get().broadcast(transaction);
+            } catch(StatusRuntimeException ex) {
+                throw new ServerException(ex.getMessage(), ex);
+            }
         }
     }
 

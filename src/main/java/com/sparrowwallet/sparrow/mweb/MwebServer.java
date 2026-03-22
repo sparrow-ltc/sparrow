@@ -14,6 +14,7 @@ import com.sparrowwallet.sparrow.event.ConnectionEvent;
 import com.sparrowwallet.sparrow.event.DisconnectionEvent;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.mweb.proto.*;
+import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
 import java.io.IOException;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 
 public class MwebServer {
+    private ManagedChannel channel;
     private RpcGrpc.RpcBlockingStub stub;
     private RpcGrpc.RpcStub stubAsync;
     private int port;
@@ -57,7 +59,7 @@ public class MwebServer {
             proxyUrl = "socks5:/" + proxy.address().toString();
         }
         port = MwebLibrary.INSTANCE.start(chain, dataDir.toString(), proxyUrl);
-        var channel = ManagedChannelBuilder.forAddress("localhost", port).usePlaintext().build();
+        channel = ManagedChannelBuilder.forAddress("localhost", port).usePlaintext().build();
         stub = RpcGrpc.newBlockingStub(channel);
         stubAsync = RpcGrpc.newStub(channel);
         statusChecker = new MwebStatusChecker(stub);
@@ -72,6 +74,10 @@ public class MwebServer {
         if (statusChecker != null) {
             statusChecker.stop();
             statusChecker = null;
+        }
+        if (channel != null) {
+            channel.shutdown();
+            channel = null;
         }
         if (port != 0) {
             MwebLibrary.INSTANCE.stop(port);
@@ -171,5 +177,12 @@ public class MwebServer {
                 .build());
         resp.getOutputIdList().forEach(outputId -> tx.addMwebOutputId(Sha256Hash.wrap(outputId)));
         return new Transaction(resp.getRawTx().toByteArray());
+    }
+
+    public Sha256Hash broadcast(Transaction tx) {
+        var resp = stub.broadcast(BroadcastRequest.newBuilder()
+                .setRawTx(ByteString.copyFrom(tx.bitcoinSerialize(tx.isSegwit(), true)))
+                .build());
+        return Sha256Hash.wrap(resp.getTxid());
     }
 }
