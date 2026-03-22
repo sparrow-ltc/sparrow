@@ -103,9 +103,7 @@ public class TransactionController implements Initializable {
         }
     }
 
-    private void initializeTxTree() {
-        txTreeWidthProperty.bind(txSplitPane.widthProperty().multiply(txSplitPane.getDividers().getFirst().positionProperty()));
-
+    private TreeItem<TransactionForm> buildTxTree() {
         HeadersForm headersForm = new HeadersForm(txdata);
         TreeItem<TransactionForm> rootItem = new TreeItem<>(headersForm);
         rootItem.setExpanded(true);
@@ -152,7 +150,13 @@ public class TransactionController implements Initializable {
 
         rootItem.getChildren().add(inputsItem);
         rootItem.getChildren().add(outputsItem);
-        txtree.setRoot(rootItem);
+        return rootItem;
+    }
+
+    private void initializeTxTree() {
+        txTreeWidthProperty.bind(txSplitPane.widthProperty().multiply(txSplitPane.getDividers().getFirst().positionProperty()));
+
+        txtree.setRoot(buildTxTree());
 
         txtree.setCellFactory(tc -> new TreeCell<>() {
             @Override
@@ -203,6 +207,7 @@ public class TransactionController implements Initializable {
         });
 
         txtree.getSelectionModel().selectedItemProperty().addListener((observable, old_val, selectedItem) -> {
+            if(selectedItem == null) return;
             TransactionForm transactionForm = selectedItem.getValue();
             if(transactionForm instanceof PageForm) {
                 PageForm pageForm = (PageForm)transactionForm;
@@ -709,7 +714,8 @@ public class TransactionController implements Initializable {
         if(event.getPsbt().equals(getPSBT())) {
             txhex.setTransaction(getTransaction());
             highlightTxHex();
-            txtree.refresh();
+            txtree.setRoot(buildTxTree());
+            txtree.getSelectionModel().select(txtree.getRoot());
         }
     }
 

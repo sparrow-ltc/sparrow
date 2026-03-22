@@ -19,6 +19,8 @@
 .witness-data { -fx-fill: color-6 }
 .witness-data-signature { -fx-fill: color-3 }
 
+.mweb { -fx-fill: color-grey }
+
 .locktime { -fx-fill: color-grey }
 
 .chart-legend-item {

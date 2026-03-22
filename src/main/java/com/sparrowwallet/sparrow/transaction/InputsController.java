@@ -79,7 +79,9 @@ public class InputsController extends TransactionFormController implements Initi
                 outputs.add(output);
             }
 
-            if(psbtInput.getUtxo() != null && psbtInput.getSigningScript() != null) {
+            if(psbtInput.isMweb()) {
+                reqSigs++;
+            } else if(psbtInput.getUtxo() != null && psbtInput.getSigningScript() != null) {
                 try {
                     reqSigs += psbtInput.getSigningScript().getNumRequiredSignatures();
                 } catch (NonStandardScriptException e) {

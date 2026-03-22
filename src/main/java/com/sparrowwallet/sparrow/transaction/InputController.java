@@ -353,6 +353,7 @@ public class InputController extends TransactionFormController implements Initia
         signatures.setText("Unknown");
         if(inputForm.getPsbtInput() != null) {
             int reqSigs = -1;
+            if(psbtInput.isMweb()) reqSigs = 1;
             if(psbtInput.getUtxo() != null && psbtInput.getSigningScript() != null) {
                 try {
                     reqSigs = psbtInput.getSigningScript().getNumRequiredSignatures();

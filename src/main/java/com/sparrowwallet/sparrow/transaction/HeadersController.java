@@ -1219,7 +1219,15 @@ public class HeadersController extends TransactionFormController implements Init
         viewFinalButton.setDisable(true);
 
         try {
-            Transaction finalTx = headersForm.getPsbt().extractTransaction();
+            Transaction finalTx;
+            if(headersForm.getPsbt().getPsbtKernels().isEmpty()) {
+                finalTx = headersForm.getPsbt().extractTransaction();
+            } else {
+                finalTx = MwebServer.get().psbtExtract(headersForm.getPsbt(), false, headersForm.getTransaction());
+                var txId = Sha256Hash.wrapReversed(headersForm.getPsbt().getPsbtKernels().getFirst().getHash().getBytes());
+                headersForm.getTransaction().setMwebTxId(txId);
+                finalTx.setMwebTxId(txId);
+            }
             headersForm.setFinalTransaction(finalTx);
             EventManager.get().post(new TransactionExtractedEvent(headersForm.getPsbt(), finalTx));
             return true;

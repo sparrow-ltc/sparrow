@@ -48,6 +48,10 @@ public class ScriptArea extends CodeArea {
             append(script.getChunks().get(0).toString(), "script-opcode");
             append(" ", "");
             append("<wsh>", "script-hash");
+        } else if(MWEB.isScriptType(script)) {
+            append(script.getChunks().get(0).toString(), "script-opcode");
+            append(" ", "");
+            append("<mweb>", "script-hash");
         } else {
             int signatureCount = 1;
             int pubKeyCount = 1;

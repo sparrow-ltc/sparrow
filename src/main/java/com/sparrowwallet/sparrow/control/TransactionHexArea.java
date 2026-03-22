@@ -37,7 +37,7 @@ public class TransactionHexArea extends CodeArea {
     public void setTransaction(Transaction transaction) {
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            transaction.bitcoinSerializeToStream(baos);
+            transaction.bitcoinSerializeToStream(baos, transaction.isSegwit(), true);
 
             fullHex = Utils.bytesToHex(baos.toByteArray());
             String hex = fullHex;
@@ -173,6 +173,8 @@ public class TransactionHexArea extends CodeArea {
             }
         }
 
+        cursor = addSegment(segments, cursor, fullHex.length() - cursor - 8, "mweb");
+
         //Locktime
         cursor = addSegment(segments, cursor, 8, "locktime");
 
@@ -253,6 +255,7 @@ public class TransactionHexArea extends CodeArea {
             case "witness-count" -> "Input #" + index + " witness count";
             case "witness-length" -> "Input #" + index + " witness #" + witnessIndex + " length";
             case "witness-data", "witness-data-signature" -> "Input #" + index + " witness #" + witnessIndex + " data";
+            case "mweb" -> "MWEB";
             case "locktime" -> "Locktime";
             default -> "";
         };

@@ -13,10 +13,7 @@ import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.ConnectionEvent;
 import com.sparrowwallet.sparrow.event.DisconnectionEvent;
 import com.sparrowwallet.sparrow.io.Storage;
-import com.sparrowwallet.sparrow.mweb.proto.CreateRequest;
-import com.sparrowwallet.sparrow.mweb.proto.PsbtAddInputRequest;
-import com.sparrowwallet.sparrow.mweb.proto.PsbtSignRequest;
-import com.sparrowwallet.sparrow.mweb.proto.RpcGrpc;
+import com.sparrowwallet.sparrow.mweb.proto.*;
 import io.grpc.ManagedChannelBuilder;
 
 import java.io.IOException;
@@ -26,8 +23,8 @@ import java.util.List;
 import java.util.Map;
 
 public class MwebServer {
-    public RpcGrpc.RpcBlockingStub stub;
-    public RpcGrpc.RpcStub stubAsync;
+    private RpcGrpc.RpcBlockingStub stub;
+    private RpcGrpc.RpcStub stubAsync;
     private int port;
     private MwebStatusChecker statusChecker;
     private MwebStreamSupervisor streamSupervisor;
@@ -163,5 +160,14 @@ public class MwebServer {
             }
         }
         return psbt2;
+    }
+
+    public Transaction psbtExtract(PSBT psbt, boolean unsigned, Transaction tx) {
+        var resp = stub.psbtExtract(PsbtExtractRequest.newBuilder()
+                .setPsbtB64(psbt.toBase64String())
+                .setUnsigned(unsigned)
+                .build());
+        resp.getOutputIdList().forEach(outputId -> tx.addMwebOutputId(Sha256Hash.wrap(outputId)));
+        return new Transaction(resp.getRawTx().toByteArray());
     }
 }
