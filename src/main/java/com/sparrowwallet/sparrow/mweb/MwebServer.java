@@ -19,6 +19,7 @@ import io.grpc.ManagedChannelBuilder;
 import java.io.IOException;
 import java.net.Proxy;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -139,8 +140,9 @@ public class MwebServer {
     }
 
     public PSBT psbtSign(PSBT psbt, Keystore keystore) throws MnemonicException, PSBTParseException {
-        var der = keystore.getKeyDerivation().extend(new ChildNumber(1, true));
-        var spendKey = keystore.getExtendedPrivateKey().getKey(der.getDerivation());
+        var der = new ArrayList<>(keystore.getExtendedPrivateKey().getKey().getPath());
+        der.add(new ChildNumber(1, true));
+        var spendKey = keystore.getExtendedPrivateKey().getKey(der);
         var resp = stub.psbtSign(PsbtSignRequest.newBuilder()
                 .setPsbtB64(psbt.toBase64String())
                 .setScanSecret(ByteString.copyFrom(keystore.getMwebScanPrivateKey().getPrivKeyBytes()))
