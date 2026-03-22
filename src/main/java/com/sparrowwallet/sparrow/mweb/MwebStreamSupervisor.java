@@ -12,10 +12,12 @@ import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.OpenWalletsEvent;
 import com.sparrowwallet.sparrow.event.WalletHistoryChangedEvent;
+import com.sparrowwallet.sparrow.event.WalletNodeHistoryChangedEvent;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.mweb.proto.RpcGrpc;
 import com.sparrowwallet.sparrow.mweb.proto.Utxo;
 import com.sparrowwallet.sparrow.mweb.proto.UtxosRequest;
+import com.sparrowwallet.sparrow.net.ElectrumServer;
 import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -114,6 +116,7 @@ public class MwebStreamSupervisor {
                     node.updateTransactionOutputs(wallet, txos);
                     wallet.updateTransactions(Map.of(txn.getHash(), txn));
                     EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, List.of(node), List.of()));
+                    EventManager.get().post(new WalletNodeHistoryChangedEvent(ElectrumServer.getScriptHash(node)));
                 });
             }
 
