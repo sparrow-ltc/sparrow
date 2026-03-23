@@ -170,13 +170,19 @@ public class MwebServer {
         return psbt2;
     }
 
-    public Transaction psbtExtract(PSBT psbt, boolean unsigned, Transaction tx) {
+    public Transaction psbtExtract(PSBT psbt, Transaction tx) {
         var resp = stub.psbtExtract(PsbtExtractRequest.newBuilder()
                 .setPsbtB64(psbt.toBase64String())
-                .setUnsigned(unsigned)
+                .setUnsigned(tx == null)
                 .build());
-        resp.getOutputIdList().forEach(outputId -> tx.addMwebOutputId(Sha256Hash.wrap(outputId)));
-        return new Transaction(resp.getRawTx().toByteArray());
+        var tx2 = new Transaction(resp.getRawTx().toByteArray());
+        if(tx != null) {
+            var txId = Sha256Hash.wrapReversed(psbt.getPsbtKernels().getFirst().getHash().getBytes());
+            tx.setMwebTxId(txId);
+            tx2.setMwebTxId(txId);
+            resp.getOutputIdList().forEach(outputId -> tx.addMwebOutputId(Sha256Hash.wrap(outputId)));
+        }
+        return tx2;
     }
 
     public Sha256Hash broadcast(Transaction tx) {

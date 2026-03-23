@@ -4,9 +4,7 @@ import com.google.common.eventbus.Subscribe;
 import com.google.protobuf.ByteString;
 import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.address.InvalidAddressException;
-import com.sparrowwallet.drongo.protocol.ScriptType;
-import com.sparrowwallet.drongo.protocol.Sha256Hash;
-import com.sparrowwallet.drongo.protocol.Transaction;
+import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
@@ -102,19 +100,56 @@ public class MwebStreamSupervisor {
                 } catch (InvalidAddressException _) {
                     return;
                 }
-                var tx = new Transaction();
-                tx.addOutput(utxo.getValue(), address);
-                tx.addMwebOutputId(Sha256Hash.wrap(utxo.getOutputId()));
-                tx.setMwebTxId(Sha256Hash.wrap(utxo.getOutputId()));
-                var txn = new BlockTransaction(tx.getTxId(), utxo.getHeight(), new Date(utxo.getBlockTime() * 1000L), 0L, tx);
+
+                var outputId = Sha256Hash.wrap(utxo.getOutputId());
+                var date = new Date(utxo.getBlockTime() * 1000L);
+
                 Platform.runLater(() -> {
                     var node = getAddressNode(address);
                     if (node == null) return;
-                    var txos = new TreeSet<>(node.getTransactionOutputs());
-                    txos.removeIf(txo -> txo.getHash().equals(txn.getHash()));
-                    txos.add(new BlockTransactionHashIndex(txn.getHash(), txn.getHeight(), txn.getDate(), txn.getFee(), 0, utxo.getValue()));
-                    node.updateTransactionOutputs(wallet, txos);
-                    wallet.updateTransactions(Map.of(txn.getHash(), txn));
+
+                    var fundingTx = new Transaction();
+                    long fundingTxFee = 0, fundingTxoIndex = 0;
+                    fundingTx.addOutput(utxo.getValue(), address);
+                    fundingTx.addMwebOutputId(outputId);
+                    fundingTx.setMwebTxId(outputId);
+
+                    outer:
+                    for (var txn : wallet.getWalletTransactions().values()) {
+                        for (var out : txn.getTransaction().getOutputs()) {
+                            if (ScriptType.MWEB.isScriptType(out.getScript()) && out.getMwebOutputId().equals(outputId)) {
+                                fundingTx = txn.getTransaction();
+                                fundingTxFee = txn.getFee();
+                                fundingTxoIndex = out.getIndex();
+                                break outer;
+                            }
+                        }
+                    }
+
+                    var fundingTxId = fundingTx.getTxId();
+                    var fundingTxn = new BlockTransaction(fundingTxId, utxo.getHeight(), date, fundingTxFee, fundingTx);
+                    var fundingTxo = new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
+                            date, fundingTxFee, fundingTxoIndex, utxo.getValue());
+
+                    var nodeTxos = new TreeSet<>(node.getTransactionOutputs());
+                    nodeTxos.removeIf(txo -> txo.getHashIndex().equals(fundingTxo.getHashIndex()));
+                    nodeTxos.add(fundingTxo);
+                    node.updateTransactionOutputs(wallet, nodeTxos);
+                    wallet.updateTransactions(Map.of(fundingTxn.getHash(), fundingTxn));
+
+                    var spending = new HashMap<HashIndex, Integer>();
+                    for (int i = 0; i < fundingTx.getInputs().size(); i++) {
+                        var in = fundingTx.getInputs().get(i);
+                        spending.put(new HashIndex(in.getOutpoint().getHash(), in.getOutpoint().getIndex()), i);
+                    }
+                    for (var walletTxo : wallet.getWalletTxos().keySet()) {
+                        var inputIndex = spending.get(walletTxo.getHashIndex());
+                        if (inputIndex != null) {
+                            walletTxo.setSpentBy(new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
+                                    date, fundingTxFee, inputIndex, walletTxo.getValue()));
+                        }
+                    }
+
                     EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, List.of(node), List.of()));
                     EventManager.get().post(new WalletNodeHistoryChangedEvent(ElectrumServer.getScriptHash(node)));
                 });

@@ -1220,13 +1220,13 @@ public class HeadersController extends TransactionFormController implements Init
 
         try {
             Transaction finalTx;
-            if(headersForm.getPsbt().getPsbtKernels().isEmpty()) {
-                finalTx = headersForm.getPsbt().extractTransaction();
+            PSBT psbt = headersForm.getPsbt();
+            if(psbt.getPsbtKernels().isEmpty()) {
+                finalTx = psbt.extractTransaction();
             } else {
-                finalTx = MwebServer.get().psbtExtract(headersForm.getPsbt(), false, headersForm.getTransaction());
-                var txId = Sha256Hash.wrapReversed(headersForm.getPsbt().getPsbtKernels().getFirst().getHash().getBytes());
-                headersForm.getTransaction().setMwebTxId(txId);
-                finalTx.setMwebTxId(txId);
+                finalTx = MwebServer.get().psbtExtract(psbt, headersForm.getTransaction());
+                var txn = new BlockTransaction(finalTx.getTxId(), 0, null, psbt.getFee(), headersForm.getTransaction());
+                headersForm.getWallet().updateTransactions(Map.of(txn.getHash(), txn));
             }
             headersForm.setFinalTransaction(finalTx);
             EventManager.get().post(new TransactionExtractedEvent(headersForm.getPsbt(), finalTx));
