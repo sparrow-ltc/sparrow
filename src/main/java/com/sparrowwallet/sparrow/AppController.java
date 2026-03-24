@@ -2086,26 +2086,18 @@ public class AppController implements Initializable {
             TransactionData transactionData;
             if(psbt != null) {
                 transactionData = new TransactionData(name, psbt);
-            } else if(blockTransaction != null) {
-                transactionData = new TransactionData(name, blockTransaction);
-            } else {
-                transactionData = new TransactionData(name, transaction);
-            }
-
-            controller.setTransactionData(transactionData);
-            if(initialView != null) {
-                controller.setInitialView(initialView, initialIndex);
-            }
-            controller.initializeView();
-
-            if(psbt != null) {
                 var tx = transactionData.getTransaction();
                 var tx2 = new Transaction();
                 tx2.setVersion(tx.getVersion());
                 tx2.setLocktime(tx.getLocktime());
+                tx2.setSegwitFlag(tx.getSegwitFlag());
                 for (var in : tx.getInputs()) {
                     var hash = in.getOutpoint().getHash();
-                    var node = transactionData.getWallet().getWalletMwebOutputIds().get(hash);
+                    WalletNode node = null;
+                    for(var wallet : AppServices.get().getOpenWallets().keySet()) {
+                        node = wallet.getWalletMwebOutputIds().get(hash);
+                        if(node != null) break;
+                    }
                     if (node != null) {
                         for (var utxo : node.getUnspentTransactionOutputs()) {
                             if (MwebUtils.getOutputId(node.getWallet(), utxo).equals(hash)) {
@@ -2118,7 +2110,17 @@ public class AppController implements Initializable {
                 }
                 tx.getOutputs().forEach(tx2::addOutput);
                 transactionData.setTransaction(tx2);
+            } else if(blockTransaction != null) {
+                transactionData = new TransactionData(name, blockTransaction);
+            } else {
+                transactionData = new TransactionData(name, transaction);
             }
+
+            controller.setTransactionData(transactionData);
+            if(initialView != null) {
+                controller.setInitialView(initialView, initialIndex);
+            }
+            controller.initializeView();
 
             TabData tabData = new TransactionTabData(TabData.TabType.TRANSACTION, file, transactionData);
             tab.setUserData(tabData);

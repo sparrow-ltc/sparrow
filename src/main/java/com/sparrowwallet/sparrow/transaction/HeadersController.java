@@ -1220,13 +1220,10 @@ public class HeadersController extends TransactionFormController implements Init
 
         try {
             Transaction finalTx;
-            PSBT psbt = headersForm.getPsbt();
-            if(psbt.getPsbtKernels().isEmpty()) {
-                finalTx = psbt.extractTransaction();
+            if(headersForm.getPsbt().getPsbtKernels().isEmpty()) {
+                finalTx = headersForm.getPsbt().extractTransaction();
             } else {
-                finalTx = MwebServer.get().psbtExtract(psbt, headersForm.getTransaction());
-                var txn = new BlockTransaction(finalTx.getTxId(), 0, null, psbt.getFee(), headersForm.getTransaction());
-                headersForm.getWallet().updateTransactions(Map.of(txn.getHash(), txn));
+                finalTx = MwebServer.get().psbtExtract(headersForm.getPsbt(), headersForm.getTransaction());
             }
             headersForm.setFinalTransaction(finalTx);
             EventManager.get().post(new TransactionExtractedEvent(headersForm.getPsbt(), finalTx));
@@ -1239,6 +1236,7 @@ public class HeadersController extends TransactionFormController implements Init
     }
 
     public void broadcastTransaction(ActionEvent event) {
+        var walletTx = headersForm.getTransaction();
         broadcastButton.setDisable(true);
         if(headersForm.getPsbt() != null) {
             if(!extractTransaction()) {
@@ -1270,6 +1268,11 @@ public class HeadersController extends TransactionFormController implements Init
 
         ElectrumServer.BroadcastTransactionService broadcastTransactionService = new ElectrumServer.BroadcastTransactionService(headersForm.getTransaction(), fee.getValue());
         broadcastTransactionService.setOnSucceeded(workerStateEvent -> {
+            if(!headersForm.getPsbt().getPsbtKernels().isEmpty()) {
+                var txn = new BlockTransaction(walletTx.getTxId(), 0, null, headersForm.getPsbt().getFee(), walletTx);
+                headersForm.getWallet().updateTransactions(Map.of(txn.getHash(), txn));
+            }
+
             //Although we wait for WalletNodeHistoryChangedEvent to indicate tx is in mempool, start a scheduled service to check the script hashes should notifications fail
             if(headersForm.getSigningWallet() != null) {
                 if(transactionMempoolService != null) {

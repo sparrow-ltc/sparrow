@@ -898,7 +898,7 @@ public class TransactionDiagram extends GridPane {
         String txDesc = "Transaction";
         Label txLabel = new Label(txDesc);
         boolean isFinalized = walletTx.getTransaction().hasScriptSigs() || walletTx.getTransaction().hasWitnesses();
-        Tooltip tooltip = new Tooltip(walletTx.getTransaction().getLength() + " bytes\n"
+        Tooltip tooltip = new Tooltip(walletTx.getTransaction().getSize() + " bytes\n"
                 + String.format("%.2f", walletTx.getTransaction().getVirtualSize()) + " vBytes"
                 + (walletTx.getFee() < 0 ? "" : "\n" + String.format("%.2f", walletTx.getFee() / walletTx.getTransaction().getVirtualSize()) + " lits/vB" + (isFinalized ? "" : " (non-final)")));
         tooltip.setShowDelay(new Duration(TOOLTIP_SHOW_DELAY));
