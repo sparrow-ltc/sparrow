@@ -109,7 +109,8 @@ public class MwebStreamSupervisor {
                     if (node == null) return;
 
                     var fundingTx = new Transaction();
-                    long fundingTxFee = 0, fundingTxoIndex = 0;
+                    Long fundingTxFee = null;
+                    long fundingTxoIndex = 0;
                     fundingTx.addOutput(utxo.getValue(), address);
                     fundingTx.addMwebOutputId(outputId);
                     fundingTx.setMwebTxId(outputId);
@@ -135,18 +136,18 @@ public class MwebStreamSupervisor {
                     nodeTxos.removeIf(txo -> txo.getHashIndex().equals(fundingTxo.getHashIndex()));
                     nodeTxos.add(fundingTxo);
                     node.updateTransactionOutputs(wallet, nodeTxos);
-                    wallet.updateTransactions(Map.of(fundingTxn.getHash(), fundingTxn));
+                    wallet.updateTransactions(Map.of(fundingTxId, fundingTxn));
 
                     var spending = new HashMap<HashIndex, Integer>();
                     for (int i = 0; i < fundingTx.getInputs().size(); i++) {
-                        var in = fundingTx.getInputs().get(i);
-                        spending.put(new HashIndex(in.getOutpoint().getHash(), in.getOutpoint().getIndex()), i);
+                        var op = fundingTx.getInputs().get(i).getOutpoint();
+                        spending.put(new HashIndex(op.getHash(), op.getIndex()), i);
                     }
-                    for (var walletTxo : wallet.getWalletTxos().keySet()) {
-                        var inputIndex = spending.get(walletTxo.getHashIndex());
+                    for (var txo : wallet.getWalletTxos().keySet()) {
+                        var inputIndex = spending.get(txo.getHashIndex());
                         if (inputIndex != null) {
-                            walletTxo.setSpentBy(new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
-                                    date, fundingTxFee, inputIndex, walletTxo.getValue()));
+                            txo.setSpentBy(new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
+                                    date, fundingTxFee, inputIndex, txo.getValue()));
                         }
                     }
 
