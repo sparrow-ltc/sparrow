@@ -9,6 +9,7 @@ import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.OpenWalletsEvent;
+import com.sparrowwallet.sparrow.event.WalletDataChangedEvent;
 import com.sparrowwallet.sparrow.event.WalletHistoryChangedEvent;
 import com.sparrowwallet.sparrow.event.WalletNodeHistoryChangedEvent;
 import com.sparrowwallet.sparrow.io.Storage;
@@ -154,6 +155,7 @@ public class MwebStreamSupervisor {
                                 changedNodes.put(node, new TreeSet<>(node.getTransactionOutputs()));
                             }
                             txo = txo.copy();
+                            txo.setId(null);
                             txo.setSpentBy(new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
                                     date, fundingTxFee, inputIndex, txo.getValue()));
                             addOrReplaceTxo(changedNodes.get(node), txo);
@@ -165,6 +167,7 @@ public class MwebStreamSupervisor {
 
                     EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, changedNodes.keySet().stream().toList(), List.of()));
                     EventManager.get().post(new WalletNodeHistoryChangedEvent(ElectrumServer.getScriptHash(addressNode)));
+                    EventManager.get().post(new WalletDataChangedEvent(wallet));
                 });
             }
 
