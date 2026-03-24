@@ -104,8 +104,8 @@ public class MwebStreamSupervisor {
                 var outputId = Sha256Hash.wrap(utxo.getOutputId());
 
                 Platform.runLater(() -> {
-                    var node = getAddressNode(address);
-                    if (node == null) return;
+                    var addressNode = getAddressNode(address);
+                    if (addressNode == null) return;
 
                     var fundingTx = new Transaction();
                     Long fundingTxFee = null;
@@ -136,34 +136,49 @@ public class MwebStreamSupervisor {
                     var fundingTxo = new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
                             date, fundingTxFee, fundingTxoIndex, utxo.getValue());
 
-                    var nodeTxos = new TreeSet<>(node.getTransactionOutputs());
-                    var nodeTxo = nodeTxos.stream().filter(txo ->
-                            txo.getHashIndex().equals(fundingTxo.getHashIndex())).findFirst().orElse(null);
-                    if (nodeTxo != null) {
-                        nodeTxos.remove(nodeTxo);
-                        fundingTxo.setSpentBy(nodeTxo.getSpentBy());
-                        fundingTxo.setLabel(nodeTxo.getLabel());
-                    }
-                    nodeTxos.add(fundingTxo);
-                    node.updateTransactionOutputs(wallet, nodeTxos);
-                    wallet.updateTransactions(Map.of(fundingTxId, fundingTxn));
-
                     var spending = new HashMap<HashIndex, Integer>();
                     for (int i = 0; i < fundingTx.getInputs().size(); i++) {
                         var op = fundingTx.getInputs().get(i).getOutpoint();
                         spending.put(new HashIndex(op.getHash(), op.getIndex()), i);
                     }
-                    for (var txo : wallet.getWalletTxos().keySet()) {
+
+                    var changedNodes = new HashMap<>(Map.of(addressNode, new TreeSet<>(addressNode.getTransactionOutputs())));
+                    addOrReplaceTxo(changedNodes.get(addressNode), fundingTxo);
+
+                    for (var entry : wallet.getWalletTxos().entrySet()) {
+                        var txo = entry.getKey();
+                        var node = entry.getValue();
                         var inputIndex = spending.get(txo.getHashIndex());
                         if (inputIndex != null) {
+                            if (!changedNodes.containsKey(node)) {
+                                changedNodes.put(node, new TreeSet<>(node.getTransactionOutputs()));
+                            }
+                            txo = txo.copy();
                             txo.setSpentBy(new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
                                     date, fundingTxFee, inputIndex, txo.getValue()));
+                            addOrReplaceTxo(changedNodes.get(node), txo);
                         }
                     }
 
-                    EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, List.of(node), List.of()));
-                    EventManager.get().post(new WalletNodeHistoryChangedEvent(ElectrumServer.getScriptHash(node)));
+                    changedNodes.forEach((node, txos) -> node.updateTransactionOutputs(wallet, txos));
+                    wallet.updateTransactions(Map.of(fundingTxId, fundingTxn));
+
+                    EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, changedNodes.keySet().stream().toList(), List.of()));
+                    EventManager.get().post(new WalletNodeHistoryChangedEvent(ElectrumServer.getScriptHash(addressNode)));
                 });
+            }
+
+            private void addOrReplaceTxo(Set<BlockTransactionHashIndex> txos, BlockTransactionHashIndex newTxo) {
+                for (var txo : txos) {
+                    if (txo.getHashIndex().equals(newTxo.getHashIndex())) {
+                        if (!newTxo.isSpent()) {
+                            newTxo.setSpentBy(txo.getSpentBy());
+                        }
+                        txos.remove(txo);
+                        break;
+                    }
+                }
+                txos.add(newTxo);
             }
 
             @Override
