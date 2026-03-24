@@ -102,7 +102,6 @@ public class MwebStreamSupervisor {
                 }
 
                 var outputId = Sha256Hash.wrap(utxo.getOutputId());
-                var date = new Date(utxo.getBlockTime() * 1000L);
 
                 Platform.runLater(() -> {
                     var node = getAddressNode(address);
@@ -127,13 +126,24 @@ public class MwebStreamSupervisor {
                         }
                     }
 
+                    Date date = null;
+                    if (utxo.getHeight() > 0) {
+                        date = new Date(utxo.getBlockTime() * 1000L);
+                    }
+
                     var fundingTxId = fundingTx.getTxId();
                     var fundingTxn = new BlockTransaction(fundingTxId, utxo.getHeight(), date, fundingTxFee, fundingTx);
                     var fundingTxo = new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
                             date, fundingTxFee, fundingTxoIndex, utxo.getValue());
 
                     var nodeTxos = new TreeSet<>(node.getTransactionOutputs());
-                    nodeTxos.removeIf(txo -> txo.getHashIndex().equals(fundingTxo.getHashIndex()));
+                    var nodeTxo = nodeTxos.stream().filter(txo ->
+                            txo.getHashIndex().equals(fundingTxo.getHashIndex())).findFirst().orElse(null);
+                    if (nodeTxo != null) {
+                        nodeTxos.remove(nodeTxo);
+                        fundingTxo.setSpentBy(nodeTxo.getSpentBy());
+                        fundingTxo.setLabel(nodeTxo.getLabel());
+                    }
                     nodeTxos.add(fundingTxo);
                     node.updateTransactionOutputs(wallet, nodeTxos);
                     wallet.updateTransactions(Map.of(fundingTxId, fundingTxn));
