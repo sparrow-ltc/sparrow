@@ -203,9 +203,10 @@ public class MwebServer {
                 .build());
         var tx2 = new Transaction(resp.getRawTx().toByteArray());
         if(tx != null) {
-            var txId = Sha256Hash.wrapReversed(psbt.getPsbtKernels().getFirst().getHash().getBytes());
-            tx.setMwebTxId(txId);
-            tx2.setMwebTxId(txId);
+            if(tx2.getInputs().isEmpty()) {
+                tx2.setMwebTxId(Sha256Hash.wrapReversed(psbt.getPsbtKernels().getFirst().getHash().getBytes()));
+            }
+            tx.setMwebTxId(tx2.getTxId());
             resp.getOutputIdList().forEach(outputId -> tx.addMwebOutputId(Sha256Hash.wrap(outputId)));
         }
         return tx2;

@@ -1147,6 +1147,7 @@ public class HeadersController extends TransactionFormController implements Init
                 headersForm.getTransactionData().setPsbt(psbt);
             } else {
                 headersForm.getPsbt().combine(psbt);
+                headersForm.getPsbt().setTransactionForSigning(MwebServer.get().psbtExtract(headersForm.getPsbt(), null));
             }
             unencryptedWallet.sign(signingNodes);
             updateSignedKeystores(headersForm.getSigningWallet());
