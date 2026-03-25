@@ -27,7 +27,10 @@ public class OutputForm extends IndexedTransactionForm {
 
     public TransactionOutput getTransactionOutput() {
         if(txdata.getTransaction() != null) {
-            return txdata.getTransaction().getOutputs().get(getIndex());
+            var outputs = txdata.getTransaction().getOutputs();
+            if(getIndex() < outputs.size()) {
+                return outputs.get(getIndex());
+            }
         }
 
         return null;

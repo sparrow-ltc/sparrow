@@ -245,6 +245,8 @@ public class InputController extends TransactionFormController implements Initia
     }
 
     private void updateScriptFields(TransactionInput txInput, PSBTInput psbtInput) {
+        if(txInput == null) return;
+
         //Don't use PSBT data if txInput has scriptSig or witness data. This happens when a tx has been extracted from a PSBT
         if(txInput.getScriptBytes().length > 0 || txInput.hasWitness()) {
             psbtInput = null;
@@ -576,7 +578,10 @@ public class InputController extends TransactionFormController implements Initia
     @Subscribe
     public void transactionExtracted(TransactionExtractedEvent event) {
         if(event.getPsbt().equals(inputForm.getPsbt())) {
-            updateScriptFields(event.getFinalTransaction().getInputs().get(inputForm.getIndex()), null);
+            var inputs = event.getFinalTransaction().getInputs();
+            if(inputForm.getIndex() < inputs.size()) {
+                updateScriptFields(inputs.get(inputForm.getIndex()), null);
+            }
         }
     }
 

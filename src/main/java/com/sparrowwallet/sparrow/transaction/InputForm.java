@@ -28,7 +28,10 @@ public class InputForm extends IndexedTransactionForm {
 
     public TransactionInput getTransactionInput() {
         if(txdata.getTransaction() != null) {
-            return txdata.getTransaction().getInputs().get(getIndex());
+            var inputs = txdata.getTransaction().getInputs();
+            if(getIndex() < inputs.size()) {
+                return inputs.get(getIndex());
+            }
         }
 
         return null;
