@@ -1,16 +1,20 @@
 #!/bin/sh
 
 build() {
-    arch=$2
-    if [ $arch = arm64 ]; then
-        arch=aarch64
+    os=$1
+    if [ $os = windows ]; then
+        os=win32
     fi
+    case $2 in
+        amd64) arch=x86-64 ;;
+        arm64) arch=aarch64 ;;
+    esac
     CGO_ENABLED=1 GOOS=$1 GOARCH=$2 \
     go build -buildmode=c-shared \
              -buildvcs=false \
              -ldflags='-s -w' \
-             -o ../src/main/resources/$1-$arch/$3
-    rm ../src/main/resources/$1-$arch/*.h
+             -o ../src/main/resources/$os-$arch/$3
+    rm ../src/main/resources/$os-$arch/*.h
 }
 
 build darwin amd64 libmweb.dylib

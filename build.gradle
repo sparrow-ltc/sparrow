@@ -194,6 +194,9 @@ jlink {
                    'glob:/javafx.graphics/*.dll,' +
                    'glob:/com.sparrowwallet.drongo/native/**,' +
                    'glob:/com.sparrowwallet.sparrow/native/**,' +
+                   'glob:/com.sparrowwallet.sparrow/darwin-*/**,' +
+                   'glob:/com.sparrowwallet.sparrow/linux-*/**,' +
+                   'glob:/com.sparrowwallet.sparrow/win32-*/**,' +
                    'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.so,' +
                    'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.dylib,' +
                    'glob:/com.sparrowwallet.merged.module/com/sun/jna/**/*.jnilib,' +
@@ -416,7 +419,7 @@ tasks.register('extractNativeLibraries') {
 
         // Project-owned natives
         copy {
-            from "${project(':drongo').projectDir}/src/main/resources/native/${osName}/${osArch}", "src/main/resources/native/${osName}/${osArch}"
+            from "${project(':drongo').projectDir}/src/main/resources/native/${osName}/${osArch}", "src/main/resources/native/${osName}/${osArch}", "src/main/resources/${jnaPlatform}"
             into imageLib
             eachFile { it.permissions { unix('rw-r--r--') } }
         }
