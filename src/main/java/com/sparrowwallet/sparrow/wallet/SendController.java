@@ -1170,7 +1170,7 @@ public class SendController extends WalletFormController implements Initializabl
         addWalletTransactionNodes();
         walletForm.setCreatedWalletTransaction(walletTransaction);
         PSBT psbt = walletTransaction.createPSBT();
-        psbt = MwebServer.get().psbtAddInputs(psbt, walletTransaction, getUserFeeRate());
+        psbt = MwebServer.get().psbtAddIO(psbt, walletTransaction, getUserFeeRate());
         EventManager.get().post(new ViewPSBTEvent(createButton.getScene().getWindow(), walletTransaction.getPayments().get(0).getLabel(), null, psbt));
     }
 

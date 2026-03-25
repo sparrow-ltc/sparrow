@@ -325,7 +325,7 @@ public class TransactionController implements Initializable {
         if (getPSBT() != null && getPSBT().getPsbtOutputs().size() > txOutput.getIndex()) {
             psbtOutput = getPSBT().getPsbtOutputs().get(txOutput.getIndex());
         }
-        OutputForm outputForm = (getPSBT() != null ? new OutputForm(txdata, psbtOutput) : new OutputForm(txdata, txOutput));
+        OutputForm outputForm = (psbtOutput != null ? new OutputForm(txdata, psbtOutput) : new OutputForm(txdata, txOutput));
         return new TreeItem<>(outputForm);
     }
 

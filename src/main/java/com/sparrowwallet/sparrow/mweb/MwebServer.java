@@ -145,6 +145,32 @@ public class MwebServer {
         return psbt;
     }
 
+    public PSBT psbtAddOutputs(PSBT psbt, WalletTransaction transaction, double feeRate) {
+        var inputsAreMweb = transaction.getWallet().getScriptType() == ScriptType.MWEB;
+        for (var output : transaction.getOutputs()) {
+            var out = output.getTransactionOutput();
+            var outputIsMweb = ScriptType.MWEB.isScriptType(out.getScript());
+            if (!inputsAreMweb && !outputIsMweb) continue;
+            var resp = stub.psbtAddRecipient(PsbtAddRecipientRequest.newBuilder()
+                    .setPsbtB64(psbt.toBase64String())
+                    .setRecipient(PsbtRecipient.newBuilder()
+                            .setAddress(out.getScript().getToAddress().toString())
+                            .setValue(out.getValue()))
+                    .setFeeRatePerKb((long)Math.ceil(feeRate * 1000))
+                    .build());
+            try {
+                psbt = PSBT.fromString(resp.getPsbtB64());
+            } catch (PSBTParseException _) {
+            }
+        }
+        return psbt;
+    }
+
+    public PSBT psbtAddIO(PSBT psbt, WalletTransaction transaction, double feeRate) {
+        psbt = psbtAddInputs(psbt, transaction, feeRate);
+        return psbtAddOutputs(psbt, transaction, feeRate);
+    }
+
     public PSBT psbtSign(PSBT psbt, Keystore keystore) throws MnemonicException, PSBTParseException {
         var der = new ArrayList<>(keystore.getExtendedPrivateKey().getKey().getPath());
         der.add(new ChildNumber(1, true));
