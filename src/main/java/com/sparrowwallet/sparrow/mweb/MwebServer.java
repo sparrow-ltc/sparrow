@@ -214,7 +214,7 @@ public class MwebServer {
 
     public Sha256Hash broadcast(Transaction tx) {
         var resp = stub.broadcast(BroadcastRequest.newBuilder()
-                .setRawTx(ByteString.copyFrom(tx.bitcoinSerialize(tx.isSegwit(), true)))
+                .setRawTx(ByteString.copyFrom(tx.bitcoinSerialize()))
                 .build());
         return Sha256Hash.wrap(resp.getTxid());
     }

@@ -1120,7 +1120,7 @@ public class ElectrumServer {
     }
 
     public Sha256Hash broadcastTransaction(Transaction transaction) throws ServerException {
-        byte[] rawtxBytes = transaction.bitcoinSerialize(transaction.isSegwit(), true);
+        byte[] rawtxBytes = transaction.bitcoinSerialize();
         String rawtxHex = Utils.bytesToHex(rawtxBytes);
 
         try {

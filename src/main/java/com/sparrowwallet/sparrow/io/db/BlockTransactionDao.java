@@ -48,13 +48,13 @@ public interface BlockTransactionDao {
 
         if(existing.isEmpty() && blkTx.getId() == null) {
             long id = insertBlockTransaction(txid.getBytes(), blkTx.getHash().getBytes(), blkTx.getHeight(), blkTx.getDate(), blkTx.getFee(), truncate(blkTx.getLabel()),
-                    blkTx.getTransaction() == null ? null : blkTx.getTransaction().bitcoinSerialize(),
+                    blkTx.getTransaction() == null ? null : blkTx.getTransaction().bitcoinSerializeFull(),
                     blkTx.getBlockHash() == null ? null : blkTx.getBlockHash().getBytes(), wallet.getId());
             blkTx.setId(id);
         } else {
             Long existingId = existing.get(txid) != null ? existing.get(txid).getId() : blkTx.getId();
             updateBlockTransaction(txid.getBytes(), blkTx.getHash().getBytes(), blkTx.getHeight(), blkTx.getDate(), blkTx.getFee(), truncate(blkTx.getLabel()),
-                    blkTx.getTransaction() == null ? null : blkTx.getTransaction().bitcoinSerialize(),
+                    blkTx.getTransaction() == null ? null : blkTx.getTransaction().bitcoinSerializeFull(),
                     blkTx.getBlockHash() == null ? null : blkTx.getBlockHash().getBytes(), wallet.getId(), existingId);
             blkTx.setId(existingId);
         }

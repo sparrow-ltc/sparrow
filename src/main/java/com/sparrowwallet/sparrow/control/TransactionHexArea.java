@@ -37,7 +37,7 @@ public class TransactionHexArea extends CodeArea {
     public void setTransaction(Transaction transaction) {
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            transaction.bitcoinSerializeToStream(baos, transaction.isSegwit(), true);
+            transaction.bitcoinSerializeToStream(baos);
 
             fullHex = Utils.bytesToHex(baos.toByteArray());
             String hex = fullHex;
