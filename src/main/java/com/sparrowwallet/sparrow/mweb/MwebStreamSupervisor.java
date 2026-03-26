@@ -109,8 +109,7 @@ public class MwebStreamSupervisor {
                     if (addressNode == null) return;
 
                     var fundingTx = new Transaction();
-                    Long fundingTxFee = null;
-                    long fundingTxoIndex = 0;
+                    long fundingTxFee = 0, fundingTxoIndex = 0;
                     fundingTx.addOutput(utxo.getValue(), address);
                     fundingTx.addMwebOutputId(outputId);
                     fundingTx.setMwebTxId(outputId);

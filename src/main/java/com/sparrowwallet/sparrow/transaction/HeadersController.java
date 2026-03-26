@@ -1269,7 +1269,7 @@ public class HeadersController extends TransactionFormController implements Init
 
         ElectrumServer.BroadcastTransactionService broadcastTransactionService = new ElectrumServer.BroadcastTransactionService(headersForm.getTransaction(), fee.getValue());
         broadcastTransactionService.setOnSucceeded(workerStateEvent -> {
-            if(!headersForm.getPsbt().getPsbtKernels().isEmpty()) {
+            if(headersForm.getWallet().getScriptType() == ScriptType.MWEB) {
                 var txn = new BlockTransaction(walletTx.getTxId(), 0, null, fee.getValue(), walletTx);
                 headersForm.getWallet().updateTransactions(Map.of(txn.getHash(), txn));
             }
