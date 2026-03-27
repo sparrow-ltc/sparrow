@@ -2090,7 +2090,6 @@ public class AppController implements Initializable {
                 var tx2 = new Transaction();
                 tx2.setVersion(tx.getVersion());
                 tx2.setLocktime(tx.getLocktime());
-                tx2.setSegwitFlag(tx.getSegwitFlag());
                 for (var in : tx.getInputs()) {
                     var hash = in.getOutpoint().getHash();
                     WalletNode node = null;

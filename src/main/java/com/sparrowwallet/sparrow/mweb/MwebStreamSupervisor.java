@@ -2,6 +2,7 @@ package com.sparrowwallet.sparrow.mweb;
 
 import com.google.common.eventbus.Subscribe;
 import com.google.protobuf.ByteString;
+import com.sparrowwallet.drongo.KeyPurpose;
 import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.address.InvalidAddressException;
 import com.sparrowwallet.drongo.protocol.*;
@@ -110,6 +111,7 @@ public class MwebStreamSupervisor {
 
                     var fundingTx = new Transaction();
                     long fundingTxFee = 0, fundingTxoIndex = 0;
+                    String label = null;
                     fundingTx.addOutput(utxo.getValue(), address);
                     fundingTx.addMwebOutputId(outputId);
                     fundingTx.setMwebTxId(outputId);
@@ -121,6 +123,7 @@ public class MwebStreamSupervisor {
                                 fundingTx = txn.getTransaction();
                                 fundingTxFee = txn.getFee();
                                 fundingTxoIndex = out.getIndex();
+                                label = txn.getLabel();
                                 break outer;
                             }
                         }
@@ -131,10 +134,16 @@ public class MwebStreamSupervisor {
                         date = new Date(utxo.getBlockTime() * 1000L);
                     }
 
+                    String txoLabel = null;
+                    if (label != null) {
+                        txoLabel = label + (addressNode.getKeyPurpose() == KeyPurpose.CHANGE ? " (change)" : " (received)");
+                    }
+
                     var fundingTxId = fundingTx.getTxId();
-                    var fundingTxn = new BlockTransaction(fundingTxId, utxo.getHeight(), date, fundingTxFee, fundingTx);
+                    var fundingTxn = new BlockTransaction(fundingTxId, utxo.getHeight(),
+                            date, fundingTxFee, fundingTx, null, label);
                     var fundingTxo = new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
-                            date, fundingTxFee, fundingTxoIndex, utxo.getValue());
+                            date, fundingTxFee, fundingTxoIndex, utxo.getValue(), null, txoLabel);
 
                     var spending = new HashMap<HashIndex, Integer>();
                     for (int i = 0; i < fundingTx.getInputs().size(); i++) {
@@ -156,7 +165,8 @@ public class MwebStreamSupervisor {
                             txo = txo.copy();
                             txo.setId(null);
                             txo.setSpentBy(new BlockTransactionHashIndex(fundingTxId, utxo.getHeight(),
-                                    date, fundingTxFee, inputIndex, txo.getValue()));
+                                    date, fundingTxFee, inputIndex, txo.getValue(), null,
+                                    label != null ? label + " (input)" : null));
                             addOrReplaceTxo(changedNodes.get(node), txo);
                         }
                     }
