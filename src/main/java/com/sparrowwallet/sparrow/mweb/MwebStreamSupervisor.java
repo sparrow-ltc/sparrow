@@ -186,6 +186,7 @@ public class MwebStreamSupervisor {
                         if (!newTxo.isSpent()) {
                             newTxo.setSpentBy(txo.getSpentBy());
                         }
+                        if (txo.equals(newTxo)) return;
                         txos.remove(txo);
                         break;
                     }
