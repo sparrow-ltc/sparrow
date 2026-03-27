@@ -2,19 +2,21 @@ package com.sparrowwallet.sparrow.mweb;
 
 import com.google.common.eventbus.Subscribe;
 import com.sparrowwallet.drongo.protocol.ScriptType;
+import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.wallet.BlockTransaction;
 import com.sparrowwallet.drongo.wallet.Wallet;
+import com.sparrowwallet.drongo.wallet.WalletNode;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.OpenWalletsEvent;
+import com.sparrowwallet.sparrow.event.WalletDataChangedEvent;
+import com.sparrowwallet.sparrow.event.WalletHistoryChangedEvent;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.mweb.proto.RpcGrpc;
 import com.sparrowwallet.sparrow.mweb.proto.SpentRequest;
 import javafx.application.Platform;
 
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -66,7 +68,7 @@ public class MwebSpentChecker {
             t.setDaemon(true);
             return t;
         });
-        exec.scheduleAtFixedRate(() -> check(wallet, storage), 0, 10, TimeUnit.SECONDS);
+        exec.scheduleAtFixedRate(() -> check(wallet, storage), 0, 5, TimeUnit.SECONDS);
         return exec;
     }
 
@@ -80,19 +82,34 @@ public class MwebSpentChecker {
 
     private void check(Wallet wallet, Storage storage) {
         Platform.runLater(() -> {
+            var updatedTxns = new HashMap<Sha256Hash, BlockTransaction>();
+            outer:
             for (var txn : wallet.getWalletTransactions().values()) {
                 if (txn.getHeight() > 0) continue;
                 var builder = SpentRequest.newBuilder();
                 for (var in : txn.getTransaction().getInputs()) {
-                    builder.addOutputId(wallet.getWalletTransaction(in.getOutpoint().getHash()).getTransaction()
-                            .getOutputs().get((int)in.getOutpoint().getIndex()).getMwebOutputId().toString());
+                    var txn2 = wallet.getWalletTransaction(in.getOutpoint().getHash());
+                    if (txn2.getHeight() == 0) continue outer;
+                    builder.addOutputId(txn2.getTransaction().getOutputs()
+                            .get((int)in.getOutpoint().getIndex()).getMwebOutputId().toString());
                 }
                 var resp = stub.spent(builder.build());
                 if (resp.getOutputIdCount() == txn.getTransaction().getInputs().size()) {
                     txn = new BlockTransaction(txn.getHash(), wallet.getStoredBlockHeight(),
                             new Date(), txn.getFee(), txn.getTransaction(), null, txn.getLabel());
-                    wallet.updateTransactions(Map.of(txn.getHash(), txn));
+                    updatedTxns.put(txn.getHash(), txn);
                 }
+            }
+            if (!updatedTxns.isEmpty()) {
+                var nodes = new ArrayList<WalletNode>();
+                for (var entry : wallet.getWalletTxos().entrySet()) {
+                    if (updatedTxns.containsKey(entry.getKey().getHash())) {
+                        nodes.add(entry.getValue());
+                    }
+                }
+                wallet.updateTransactions(updatedTxns);
+                EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, nodes, List.of()));
+                EventManager.get().post(new WalletDataChangedEvent(wallet));
             }
         });
     }
