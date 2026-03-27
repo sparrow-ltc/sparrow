@@ -82,13 +82,14 @@ public class MwebSpentChecker {
 
     private void check(Wallet wallet, Storage storage) {
         Platform.runLater(() -> {
+            var walletTxns = wallet.getWalletTransactions();
             var updatedTxns = new HashMap<Sha256Hash, BlockTransaction>();
             outer:
-            for (var txn : wallet.getWalletTransactions().values()) {
-                if (txn.getHeight() > 0) continue;
+            for (var txn : walletTxns.values()) {
+                if (txn.getHeight() > 0 || txn.getTransaction().getInputs().isEmpty()) continue;
                 var builder = SpentRequest.newBuilder();
                 for (var in : txn.getTransaction().getInputs()) {
-                    var txn2 = wallet.getWalletTransaction(in.getOutpoint().getHash());
+                    var txn2 = walletTxns.get(in.getOutpoint().getHash());
                     if (txn2.getHeight() == 0) continue outer;
                     builder.addOutputId(txn2.getTransaction().getOutputs()
                             .get((int)in.getOutpoint().getIndex()).getMwebOutputId().toString());
