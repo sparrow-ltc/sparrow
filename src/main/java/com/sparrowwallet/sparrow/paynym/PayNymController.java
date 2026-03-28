@@ -623,7 +623,7 @@ public class PayNymController {
 
         long noInputsFee = getMasterWallet().getNoInputsFee(payments, feeRate);
         List<UtxoSelector> utxoSelectors = List.of(utxos == null ? new KnapsackUtxoSelector(noInputsFee) : new PresetUtxoSelector(utxos, true, false));
-        List<TxoFilter> txoFilters = List.of(new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(wallet));
+        List<TxoFilter> txoFilters = List.of(new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(wallet), new MwebPegoutTxoFilter(wallet));
 
         TransactionParameters params = new TransactionParameters(utxoSelectors, txoFilters, payments, opReturns, Collections.emptySet(),
                 feeRate, minimumFeeRate, minRelayFeeRate, null, AppServices.getCurrentBlockHeight(), groupByAddress, includeMempoolOutputs, true, new MwebFeeEstimator());

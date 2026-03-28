@@ -253,7 +253,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
             vSize += changeOutput.getLength();
         }
         double inputSize = tx.getInputs().get(0).getLength() + (tx.getInputs().get(0).hasWitness() ? (double)tx.getInputs().get(0).getWitness().getLength() / Transaction.WITNESS_SCALE_FACTOR : 0);
-        List<TxoFilter> txoFilters = List.of(new ExcludeTxoFilter(utxos), new SpentTxoFilter(blockTransaction.getHash()), new FrozenTxoFilter(), new CoinbaseTxoFilter(transactionEntry.getWallet()));
+        List<TxoFilter> txoFilters = List.of(new ExcludeTxoFilter(utxos), new SpentTxoFilter(blockTransaction.getHash()), new FrozenTxoFilter(), new CoinbaseTxoFilter(transactionEntry.getWallet()), new MwebPegoutTxoFilter(transactionEntry.getWallet()));
         double feeRate = blockTransaction.getFeeRate() == null ? AppServices.getMinimumRelayFeeRate() : blockTransaction.getFeeRate();
         List<OutputGroup> outputGroups = transactionEntry.getWallet().getGroupedUtxos(txoFilters, feeRate, AppServices.getMinimumRelayFeeRate(), Config.get().isGroupByAddress())
                 .stream().filter(outputGroup -> outputGroup.getEffectiveValue() >= 0).collect(Collectors.toList());
@@ -375,7 +375,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         double inputSize = freshAddress.getScriptType().getInputVbytes();
         double vSize = inputSize + txOutput.getLength();
 
-        List<TxoFilter> txoFilters = List.of(new ExcludeTxoFilter(List.of(cpfpUtxo)), new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(transactionEntry.getWallet()));
+        List<TxoFilter> txoFilters = List.of(new ExcludeTxoFilter(List.of(cpfpUtxo)), new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(transactionEntry.getWallet()), new MwebPegoutTxoFilter(transactionEntry.getWallet()));
         double feeRate = blockTransaction.getFeeRate() == null ? AppServices.getMinimumRelayFeeRate() : blockTransaction.getFeeRate();
         List<OutputGroup> outputGroups = transactionEntry.getWallet().getGroupedUtxos(txoFilters, feeRate, AppServices.getMinimumRelayFeeRate(), Config.get().isGroupByAddress())
                 .stream().filter(outputGroup -> outputGroup.getEffectiveValue() >= 0).collect(Collectors.toList());

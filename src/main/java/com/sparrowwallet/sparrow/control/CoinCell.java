@@ -76,7 +76,7 @@ class CoinCell extends TreeTableCell<Entry, Number> implements ConfirmationsList
             }
 
             if(entry instanceof TransactionEntry transactionEntry) {
-                tooltip.showConfirmations(transactionEntry.confirmationsProperty(), transactionEntry.isCoinbase());
+                tooltip.showConfirmations(transactionEntry.confirmationsProperty(), transactionEntry.isCoinbase(), transactionEntry.isMwebPegOut());
 
                 if(transactionEntry.isConfirming()) {
                     ConfirmationProgressIndicator arc = new ConfirmationProgressIndicator(transactionEntry.getConfirmations());
@@ -128,6 +128,7 @@ class CoinCell extends TreeTableCell<Entry, Number> implements ConfirmationsList
         private final IntegerProperty confirmationsProperty = new SimpleIntegerProperty();
         private boolean showConfirmations;
         private boolean isCoinbase;
+        private boolean isPegout;
         private String value;
 
         public void setValue(String value) {
@@ -135,9 +136,10 @@ class CoinCell extends TreeTableCell<Entry, Number> implements ConfirmationsList
             setTooltipText();
         }
 
-        public void showConfirmations(IntegerProperty txEntryConfirmationsProperty, boolean coinbase) {
+        public void showConfirmations(IntegerProperty txEntryConfirmationsProperty, boolean coinbase, boolean pegout) {
             showConfirmations = true;
             isCoinbase = coinbase;
+            isPegout = pegout;
 
             int confirmations = txEntryConfirmationsProperty.get();
             if(confirmations < BlockTransactionHash.BLOCKS_TO_FULLY_CONFIRM) {
@@ -159,6 +161,7 @@ class CoinCell extends TreeTableCell<Entry, Number> implements ConfirmationsList
         public void hideConfirmations() {
             showConfirmations = false;
             isCoinbase = false;
+            isPegout = false;
             confirmationsProperty.unbind();
 
             setTooltipText();
@@ -173,7 +176,14 @@ class CoinCell extends TreeTableCell<Entry, Number> implements ConfirmationsList
             if(confirmations == 0) {
                 return "Unconfirmed in mempool";
             } else if(confirmations < BlockTransactionHash.BLOCKS_TO_FULLY_CONFIRM) {
-                return confirmations + " confirmation" + (confirmations == 1 ? "" : "s") + (isCoinbase ? ", immature coinbase" : "");
+                String text = confirmations + " confirmation" + (confirmations == 1 ? "" : "s");
+                if(isCoinbase) {
+                    text += ", immature coinbase";
+                }
+                if(isPegout && confirmations < Transaction.PEGOUT_MATURITY_THRESHOLD) {
+                    text += ", immature MWEB peg-out";
+                }
+                return text;
             } else {
                 return BlockTransactionHash.BLOCKS_TO_FULLY_CONFIRM + "+ confirmations";
             }

@@ -101,6 +101,10 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
         return blockTransaction.getTransaction() != null && !blockTransaction.getTransaction().getInputs().isEmpty() && blockTransaction.getTransaction().getInputs().get(0).isCoinBase();
     }
 
+    public boolean isMwebPegOut() {
+        return blockTransaction.getTransaction() != null && blockTransaction.getTransaction().isHogEx();
+    }
+
     public boolean isComplete(Map<HashIndex, BlockTransactionHashIndex> walletTxos) {
         int validEntries = 0;
         for(TransactionInput txInput : blockTransaction.getTransaction().getInputs()) {

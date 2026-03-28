@@ -753,10 +753,10 @@ public class SendController extends WalletFormController implements Initializabl
 
         TxoFilter txoFilter = txoFilterProperty.get();
         if(txoFilter != null) {
-            return List.of(txoFilter, spentTxoFilter, new FrozenTxoFilter(), new CoinbaseTxoFilter(getWalletForm().getWallet()));
+            return List.of(txoFilter, spentTxoFilter, new FrozenTxoFilter(), new CoinbaseTxoFilter(getWalletForm().getWallet()), new MwebPegoutTxoFilter(getWalletForm().getWallet()));
         }
 
-        return List.of(spentTxoFilter, new FrozenTxoFilter(), new CoinbaseTxoFilter(getWalletForm().getWallet()));
+        return List.of(spentTxoFilter, new FrozenTxoFilter(), new CoinbaseTxoFilter(getWalletForm().getWallet()), new MwebPegoutTxoFilter(getWalletForm().getWallet()));
     }
 
     private void setDefaultFeeRate() {
