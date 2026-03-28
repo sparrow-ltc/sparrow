@@ -115,9 +115,13 @@ public class MwebServer {
         }
         outputs.forEach(out -> tx.addOutput(MwebUtils.adjustScript(out.getTransactionOutput())));
         var keystore = wallet.getKeystores().getFirst();
+        var scanKey = new byte[32];
+        if (keystore.getMwebScanPrivateKey() != null) {
+            scanKey = keystore.getMwebScanPrivateKey().getPrivKeyBytes();
+        }
         var resp = stub.create(CreateRequest.newBuilder()
                 .setRawTx(ByteString.copyFrom(tx.bitcoinSerialize()))
-                .setScanSecret(ByteString.copyFrom(keystore.getMwebScanPrivateKey().getPrivKeyBytes()))
+                .setScanSecret(ByteString.copyFrom(scanKey))
                 .setSpendSecret(ByteString.copyFrom(new byte[32]))
                 .setFeeRatePerKb((long)Math.ceil(feeRate * 1000))
                 .setDryRun(dryRun)
