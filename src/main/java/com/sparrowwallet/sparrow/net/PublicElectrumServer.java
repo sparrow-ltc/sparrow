@@ -9,12 +9,17 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 public enum PublicElectrumServer {
-    ELECTRUM_LTC_ORG("backup.electrum-ltc.org", "ssl://backup.electrum-ltc.org:443", Network.MAINNET),
+    AFTREK_ORG("ltc.aftrek.org", "ssl://ltc.aftrek.org:50002", Network.MAINNET),
     BYSH_ME("electrum-ltc.bysh.me", "ssl://electrum-ltc.bysh.me:50002", Network.MAINNET),
-    XURIOUS_COM("electrum.ltc.xurious.com", "ssl://electrum.ltc.xurious.com:50002", Network.MAINNET),
-    PRIVATESERVERS_NETWORK("electrum.privateservers.network", "ssl://electrum.privateservers.network:50005", Network.MAINNET),
     CIPIG_NET("electrum1.cipig.net", "ssl://electrum1.cipig.net:20063", Network.MAINNET),
+    ELECTRUM_LTC_ORG("backup.electrum-ltc.org", "ssl://backup.electrum-ltc.org:443", Network.MAINNET),
+    FEM_SH("l.fem.sh", "ssl://l.fem.sh:50002", Network.MAINNET),
+    FIATFAUCET_COM("fallacy.fiatfaucet.com", "ssl://fallacy.fiatfaucet.com:50002", Network.MAINNET),
+    JHOENICKE_DE("electrum.jhoenicke.de", "ssl://electrum.jhoenicke.de:50091", Network.MAINNET),
+    JOCHEN_HOENICKE_DE("electrum.jochen-hoenicke.de", "ssl://electrum.jochen-hoenicke.de:50091", Network.MAINNET),
+    PETRKR_NET("electrum.petrkr.net", "ssl://electrum.petrkr.net:60002", Network.MAINNET),
     RENTONISK_COM("ltc.rentonisk.com", "ssl://ltc.rentonisk.com:50002", Network.MAINNET),
+    XURIOUS_COM("electrum.ltc.xurious.com", "ssl://electrum.ltc.xurious.com:50002", Network.MAINNET),
     TESTNET_BYSH_ME("electrum-ltc.bysh.me", "ssl://electrum-ltc.bysh.me:51002", Network.TESTNET),
     TESTNET_XURIOUS_COM("electrum.ltc.xurious.com", "ssl://electrum.ltc.xurious.com:51002", Network.TESTNET);
 
