@@ -1,9 +1,12 @@
 package com.sparrowwallet.sparrow.mweb;
 
 import com.google.common.eventbus.Subscribe;
+import com.sparrowwallet.drongo.protocol.Script;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.protocol.Sha256Hash;
+import com.sparrowwallet.drongo.protocol.Transaction;
 import com.sparrowwallet.drongo.wallet.BlockTransaction;
+import com.sparrowwallet.drongo.wallet.BlockTransactionHashIndex;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.drongo.wallet.WalletNode;
 import com.sparrowwallet.sparrow.AppServices;
@@ -20,6 +23,7 @@ import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 public class MwebSpentChecker {
     private final RpcGrpc.RpcBlockingStub stub;
@@ -68,7 +72,8 @@ public class MwebSpentChecker {
             t.setDaemon(true);
             return t;
         });
-        exec.scheduleAtFixedRate(() -> check(wallet, storage), 0, 5, TimeUnit.SECONDS);
+        exec.scheduleAtFixedRate(() -> checkTxns(wallet, storage), 0, 5, TimeUnit.SECONDS);
+        exec.scheduleAtFixedRate(() -> checkUtxos(wallet, storage), 0, 10, TimeUnit.SECONDS);
         return exec;
     }
 
@@ -80,7 +85,7 @@ public class MwebSpentChecker {
         }
     }
 
-    private void check(Wallet wallet, Storage storage) {
+    private void checkTxns(Wallet wallet, Storage storage) {
         Platform.runLater(() -> {
             var walletTxns = wallet.getWalletTransactions();
             var updatedTxns = new HashMap<Sha256Hash, BlockTransaction>();
@@ -112,6 +117,42 @@ public class MwebSpentChecker {
                 EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, nodes, List.of()));
                 EventManager.get().post(new WalletDataChangedEvent(wallet));
             }
+        });
+    }
+
+    private void checkUtxos(Wallet wallet, Storage storage) {
+        Platform.runLater(() -> {
+            var utxos = wallet.getWalletUtxos();
+            var outputIds = new HashMap<String, BlockTransactionHashIndex>();
+            for (var entry : utxos.entrySet()) {
+                var txn = wallet.getWalletTransaction(entry.getKey().getHash());
+                if (txn.getHeight() == 0) continue;
+                var out = txn.getTransaction().getOutputs().get((int)entry.getKey().getIndex());
+                outputIds.put(out.getMwebOutputId().toString(), entry.getKey());
+            }
+            var resp = stub.spent(SpentRequest.newBuilder().addAllOutputId(outputIds.keySet()).build());
+            var spentTxos = resp.getOutputIdList().stream().map(outputIds::get).map(BlockTransactionHashIndex::copy).toList();
+            if (spentTxos.isEmpty()) return;
+            var nodes = spentTxos.stream().collect(Collectors.toMap(utxos::get,
+                    txo -> utxos.get(txo).getTransactionOutputs(), (v, _) -> v));
+            nodes.replaceAll((_, v) -> new TreeSet<>(v));
+            var tx = new Transaction();
+            for (var txo : spentTxos) {
+                tx.addInput(txo.getHash(), txo.getIndex(), new Script(List.of()));
+            }
+            var txn = new BlockTransaction(tx.getTxId(), wallet.getStoredBlockHeight(), new Date(), 0L, tx);
+            for (int i = 0; i < spentTxos.size(); i++) {
+                var txo = spentTxos.get(i);
+                var txos = nodes.get(utxos.get(txo));
+                txos.remove(txo);
+                txo.setId(null);
+                txo.setSpentBy(new BlockTransactionHashIndex(txn.getHash(), txn.getHeight(), txn.getDate(), 0L, i, txo.getValue()));
+                txos.add(txo);
+            }
+            nodes.forEach((node, txos) -> node.updateTransactionOutputs(wallet, txos));
+            wallet.updateTransactions(Map.of(txn.getHash(), txn));
+            EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, nodes.keySet().stream().toList(), List.of()));
+            EventManager.get().post(new WalletDataChangedEvent(wallet));
         });
     }
 }
