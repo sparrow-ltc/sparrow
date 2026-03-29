@@ -459,6 +459,18 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         EventManager.get().post(new WalletUtxoStatusChangedEvent(hashIndexEntry.getWallet(), utxos));
     }
 
+    private static void removeUtxo(TreeTableView<Entry> treeTableView, HashIndexEntry hashIndexEntry) {
+        var wallet = hashIndexEntry.getWallet();
+        var txo = hashIndexEntry.getHashIndex();
+        var node = wallet.getWalletUtxos().get(txo);
+        if(node == null) return;
+        var txos = new TreeSet<>(node.getTransactionOutputs());
+        txos.remove(txo);
+        node.updateTransactionOutputs(wallet, txos);
+        EventManager.get().post(new WalletHistoryChangedEvent(wallet, null, List.of(node), List.of()));
+        EventManager.get().post(new WalletDataChangedEvent(wallet));
+    }
+
     private String getTooltip(TransactionEntry transactionEntry) {
         String tooltip = transactionEntry.getBlockTransaction().getHash().toString();
         if(transactionEntry.getBlockTransaction().getHeight() <= 0) {
@@ -543,6 +555,12 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
     private static Glyph getUnfreezeGlyph() {
         Glyph copyGlyph = new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.SUN);
+        copyGlyph.setFontSize(12);
+        return copyGlyph;
+    }
+
+    private static Glyph getRemoveGlyph() {
+        Glyph copyGlyph = new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.TRASH);
         copyGlyph.setFontSize(12);
         return copyGlyph;
     }
@@ -791,6 +809,16 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                         unfreezeUtxo(treeTableView, hashIndexEntry);
                     });
                     getItems().add(unfreezeUtxo);
+                }
+                if(hashIndexEntry.getWallet().getScriptType() == ScriptType.MWEB &&
+                        hashIndexEntry.getHashIndex().getHeight() == 0) {
+                    MenuItem removeUtxo = new MenuItem("Remove UTXO");
+                    removeUtxo.setGraphic(getRemoveGlyph());
+                    removeUtxo.setOnAction(AE -> {
+                        hide();
+                        removeUtxo(treeTableView, hashIndexEntry);
+                    });
+                    getItems().add(removeUtxo);
                 }
             }
 

@@ -26,7 +26,7 @@ public class WalletHistoryChangedEvent extends WalletChangedEvent {
     }
 
     public String getWalletId() {
-        return storage.getWalletId(getWallet());
+        return storage != null ? storage.getWalletId(getWallet()) : "";
     }
 
     public List<WalletNode> getHistoryChangedNodes() {
