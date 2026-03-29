@@ -184,6 +184,13 @@ public abstract class FileImportPane extends TitledDescriptionPane {
                     }
                     setError("Import Error", errorMessage);
                 }
+            } else if(result.uri != null) {
+                try {
+                    importFile(importer.getName(), new ByteArrayInputStream(result.uri.toURIString().getBytes(StandardCharsets.UTF_8)), null);
+                } catch(ImportException e) {
+                    log.error("Error importing QR", e);
+                    setError("Import Error", e.getMessage());
+                }
             } else if(result.exception != null) {
                 log.error("Error importing QR", result.exception);
                 setError("Import Error", result.exception.getMessage());
