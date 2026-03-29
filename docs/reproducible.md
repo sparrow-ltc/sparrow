@@ -1,6 +1,6 @@
 # Reproducible builds
 
-Reproducibility is a goal of the Sparrow Wallet project.
+Reproducibility is a goal of the Sparrow-LTC Wallet project.
 As of v1.5.0 and later, it is possible to recreate the exact binaries in the Github releases (specifically, the contents of the `.tar.gz` and `.zip` files).
 
 Due to minor variances, it is not yet possible to reproduce the installer packages (`.deb`, `.rpm` and `.exe`).
@@ -11,7 +11,7 @@ Work on resolving both of these issues is ongoing.
 
 ### Install Java
 
-Because Sparrow bundles a Java runtime in the release binaries, it is essential to have the same version of Java installed when creating the release.
+Because Sparrow-LTC bundles a Java runtime in the release binaries, it is essential to have the same version of Java installed when creating the release.
 For v1.6.6 to v1.9.1, this was Eclipse Temurin 18.0.1+10. For v2.0.0 to v2.3.1, this was Eclipse Temurin 22.0.2+9. For v2.4.0 and later, Eclipse Temurin 25.0.2+10 is used.
 
 Note: Do not install Java using a system package manager (e.g. apt, dnf, rpm). 
@@ -95,12 +95,12 @@ The binaries (and installers) will be placed in the `build/jpackage` folder.
 
 Verify the built binaries against the released binaries on https://github.com/sparrowwallet/sparrow/releases.
 
-Note that you will be verifying the files in the `build/jpackage/Sparrow` folder against either the `.tar.gz` or `.zip` releases.
+Note that you will be verifying the files in the `build/jpackage/Sparrow-LTC` folder against either the `.tar.gz` or `.zip` releases.
 Download either of these depending on your platform and extract the contents to a folder (in the following example, `/tmp`).
 Then compare all of the folders and files recursively:
 
 ```shell
-diff -r build/jpackage/Sparrow /tmp/Sparrow
+diff -r build/jpackage/Sparrow-LTC /tmp/Sparrow-LTC
 ```
 
 This command should have no output indicating that the two folders (and all their contents) are identical.

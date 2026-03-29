@@ -18,7 +18,7 @@ import java.util.*;
 
 public class SparrowWallet {
     public static final String APP_ID = "sparrow";
-    public static final String APP_NAME = "Sparrow";
+    public static final String APP_NAME = "Sparrow-LTC";
     public static final String APP_VERSION = "2.4.3";
     public static final String APP_VERSION_SUFFIX = "";
     public static final String APP_HOME_PROPERTY = "sparrow.home";
@@ -46,7 +46,7 @@ public class SparrowWallet {
         }
 
         if(args.version) {
-            System.out.println("Sparrow Wallet " + APP_VERSION);
+            System.out.println("Sparrow-LTC Wallet " + APP_VERSION);
             System.exit(0);
         }
 
@@ -56,7 +56,7 @@ public class SparrowWallet {
 
         if(args.dir != null) {
             System.setProperty(APP_HOME_PROPERTY, args.dir);
-            getLogger().info("Using configured Sparrow home folder of " + args.dir);
+            getLogger().info("Using configured Sparrow-LTC home folder of " + args.dir);
         }
 
         if(args.network != null) {
@@ -124,7 +124,7 @@ public class SparrowWallet {
         } catch(UnsupportedOperationException e) {
             Drongo.removeRootLogAppender("STDOUT");
             getLogger().error("Unable to launch application", e);
-            System.out.println("No display detected. Use Sparrow Server on a headless (no display) system.");
+            System.out.println("No display detected. Use Sparrow-LTC Server on a headless (no display) system.");
 
             try {
                 if(instance != null) {

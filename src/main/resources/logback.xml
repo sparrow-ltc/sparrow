@@ -41,7 +41,7 @@
     <contextListener class="ch.qos.logback.classic.jul.LevelChangePropagator"/>
 
     <define name="appDir" class="com.sparrowwallet.drongo.PropertyDefiner">
-        <application>sparrow</application>
+        <application>sparrow-ltc</application>
     </define>
 
     <appender name="FILE" class="ch.qos.logback.core.FileAppender">

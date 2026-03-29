@@ -39,7 +39,7 @@ public class PassportMultisig extends ColdcardMultisig {
 
     @Override
     public String getWalletExportDescription() {
-        return "As part of the Multisig connection flow, Passport will ask you to scan or import the multisig configuration from Sparrow. To import this configuration manually, go to Settings > Bitcoin > Multisig > Import from QR Code/microSD.";
+        return "As part of the Multisig connection flow, Passport will ask you to scan or import the multisig configuration from Sparrow-LTC. To import this configuration manually, go to Settings > Bitcoin > Multisig > Import from QR Code/microSD.";
     }
 
     @Override

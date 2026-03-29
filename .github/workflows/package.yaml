@@ -31,7 +31,7 @@ jobs:
         if: ${{ runner.os == 'macOS' }}
         uses: sparrowwallet/github-actions/codesign-macos@v1
         with:
-          app-name: Sparrow
+          app-name: Sparrow-LTC
           certificate: ${{ secrets.MACOS_CERTIFICATE }}
           certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           apple-id: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
@@ -49,11 +49,11 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v6
         with:
-          name: Sparrow Build - ${{ runner.os }} ${{ runner.arch }}
+          name: Sparrow-LTC Build - ${{ runner.os }} ${{ runner.arch }}
           path: |
             build/jpackage/*
-            !build/jpackage/Sparrow/
-            !build/jpackage/Sparrow.app/
+            !build/jpackage/Sparrow-LTC/
+            !build/jpackage/Sparrow-LTC.app/
       - name: Headless build with Gradle
         if: ${{ runner.os == 'Linux' }}
         run: ./gradlew -Djava.awt.headless=true clean jpackage
@@ -67,7 +67,7 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         uses: actions/upload-artifact@v6
         with:
-          name: Sparrow Build - ${{ runner.os }} ${{ runner.arch }} Headless
+          name: Sparrow-LTC Build - ${{ runner.os }} ${{ runner.arch }} Headless
           path: |
             build/jpackage/*
-            !build/jpackage/Sparrow/
+            !build/jpackage/Sparrow-LTC/

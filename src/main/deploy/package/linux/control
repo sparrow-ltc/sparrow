@@ -7,6 +7,6 @@ Architecture: ${arch}
 Provides: sparrowwallet
 Conflicts: sparrow (<= 2.1.4)
 Replaces: sparrow (<= 2.1.4)
-Description: Sparrow Wallet
+Description: Sparrow-LTC Wallet
 Depends: libasound2, libbsd0, libc6, libmd0, libx11-6, libxau6, libxcb1, libxdmcp6, libxext6, libxi6, libxrender1, libxtst6, xdg-utils
 Installed-Size: ${size}

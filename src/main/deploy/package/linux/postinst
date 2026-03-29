@@ -22,8 +22,8 @@ package_type=deb
 
 case "$1" in
     configure)
-        xdg-desktop-menu install /opt/sparrowwallet/lib/sparrowwallet-Sparrow.desktop
-        xdg-mime install /opt/sparrowwallet/lib/sparrowwallet-Sparrow-MimeInfo.xml
+        xdg-desktop-menu install /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC.desktop
+        xdg-mime install /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC-MimeInfo.xml
         install -D -m 644 /opt/sparrowwallet/lib/runtime/conf/udev/*.rules /etc/udev/rules.d
         if ! getent group plugdev > /dev/null; then
             groupadd -r plugdev

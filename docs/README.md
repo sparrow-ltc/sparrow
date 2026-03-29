@@ -1,4 +1,4 @@
-## Sparrow Wallet Repository Docs
+## Sparrow-LTC Wallet Repository Docs
 
 Note that most documentation for the project can be found at https://sparrowwallet.com/docs/. 
 The documentation here is mainly developer-related resources.

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Sparrow-LTC
+Comment=Sparrow-LTC
+Exec=/opt/sparrowwallet/bin/Sparrow-LTC %U
+Icon=/opt/sparrowwallet/lib/Sparrow-LTC.png
+Terminal=false
+Type=Application
+Categories=Finance;Network;
+MimeType=application/psbt;application/litecoin-transaction;application/pgp-signature;x-scheme-handler/litecoin;x-scheme-handler/auth47;x-scheme-handler/lightning
+StartupWMClass=Sparrow-LTC
+SingleMainWindow=true

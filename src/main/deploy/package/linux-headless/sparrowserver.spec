@@ -1,4 +1,4 @@
-Summary: Sparrow Server
+Summary: Sparrow-LTC Server
 Name: sparrowserver
 Version: ${version}
 Release: 1
@@ -38,7 +38,7 @@ Autoreq: 0
 %define default_filesystem / /opt /usr /usr/bin /usr/lib /usr/local /usr/local/bin /usr/local/lib
 
 %description
-Sparrow Server
+Sparrow-LTC Server
 
 %global __os_install_post %{nil}
 

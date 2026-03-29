@@ -96,7 +96,7 @@
             </Field>
             <Field text="Software updates:">
                 <UnlabeledToggleSwitch fx:id="checkNewVersions" />
-                <HelpLabel helpText="Check for updates to Sparrow?"/>
+                <HelpLabel helpText="Check for updates to Sparrow-LTC?"/>
             </Field>
         </Fieldset>
     </Form>

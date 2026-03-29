@@ -39,7 +39,7 @@ public class SparrowTextGui extends MultiWindowTextGUI {
         Panel panel = new Panel(new BorderLayout());
 
         titleBar = new Panel(new GridLayout(3));
-        new Label("Sparrow Terminal").addTo(titleBar);
+        new Label("Sparrow-LTC Terminal").addTo(titleBar);
         this.proxyStatusLabel = new ProxyStatusLabel();
         titleBar.addComponent(proxyStatusLabel, GridLayout.createLayoutData(GridLayout.Alignment.END, GridLayout.Alignment.CENTER, true, false));
         this.connectedLabel = new Label("Disconnected");
