@@ -2165,9 +2165,9 @@ public class AppController implements Initializable {
                 }
             } else {
                 //If the new PSBT is finalized, copy the finalized fields to the existing unfinalized PSBT
-                currentPsbt.copyFinalizedFields(psbt);
+                transactionTabData.setPsbt(psbt);
                 setTabName(tab, name);
-                EventManager.get().post(new PSBTFinalizedEvent(currentPsbt));
+                EventManager.get().post(new PSBTFinalizedEvent(psbt));
             }
         }
 

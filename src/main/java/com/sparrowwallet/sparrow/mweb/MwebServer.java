@@ -191,18 +191,7 @@ public class MwebServer {
                 .setSpendSecret(ByteString.copyFrom(spendKey.getPrivKeyBytes()))
                 .build());
         var psbt2 = PSBT.fromString(resp.getPsbtB64());
-        for (int i = 0; i < psbt.getInputCount(); i++) {
-            var psbtInput = psbt.getPsbtInputs().get(i);
-            if (psbtInput.isMweb()) {
-                psbt2.getPsbtInputs().get(i).setMwebAmount(psbtInput.getMwebAmount());
-            }
-        }
-        for (int i = 0; i < psbt.getOutputCount(); i++) {
-            var psbtOutput = psbt.getPsbtOutputs().get(i);
-            if (psbtOutput.isMweb()) {
-                psbt2.getPsbtOutputs().get(i).setMwebStealthAddress(psbtOutput.getMwebStealthAddress());
-            }
-        }
+        MwebUtils.psbtCopy(psbt, psbt2);
         return psbt2;
     }
 

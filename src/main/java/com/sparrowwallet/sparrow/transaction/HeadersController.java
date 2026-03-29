@@ -1021,6 +1021,7 @@ public class HeadersController extends TransactionFormController implements Init
             if(result.transaction != null) {
                 EventManager.get().post(new ViewTransactionEvent(toggleButton.getScene().getWindow(), result.transaction));
             } else if(result.psbt != null) {
+                MwebUtils.psbtCopy(headersForm.getPsbt(), result.psbt);
                 EventManager.get().post(new ViewPSBTEvent(toggleButton.getScene().getWindow(), null, null, result.psbt));
             } else if(result.seed != null) {
                 signFromSeed(result.seed);

@@ -31,4 +31,8 @@ public class TransactionTabData extends TabData {
     public PSBT getPsbt() {
         return transactionData.getPsbt();
     }
+
+    public void setPsbt(PSBT psbt) {
+        transactionData.setPsbt(psbt);
+    }
 }
