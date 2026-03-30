@@ -49,7 +49,7 @@ dependencies {
     implementation('com.google.protobuf:protobuf-java:4.34.0')
     implementation('io.grpc:grpc-stub:1.79.0')
     implementation('io.grpc:grpc-protobuf:1.79.0')
-    implementation('io.grpc:grpc-netty-shaded:1.79.0')
+    implementation('io.grpc:grpc-netty:1.79.0')
     implementation('com.h2database:h2:2.1.214')
     implementation('com.zaxxer:HikariCP:7.0.2') {
         exclude group: 'org.slf4j'
@@ -178,10 +178,18 @@ jlink {
         requires 'java.logging'
         requires 'javafx.base'
         requires 'jdk.crypto.cryptoki'
+        requires 'jdk.unsupported'
         requires 'java.management'
+        requires 'com.google.common'
         requires 'io.leangen.geantyref'
         requires 'static jdk.jfr'
         uses 'org.eclipse.jetty.http.HttpFieldPreEncoder'
+        uses 'io.grpc.LoadBalancerProvider'
+        uses 'io.grpc.ManagedChannelProvider'
+        uses 'io.grpc.NameResolverProvider'
+        provides 'io.grpc.LoadBalancerProvider' with 'io.grpc.internal.PickFirstLoadBalancerProvider'
+        provides 'io.grpc.ManagedChannelProvider' with 'io.grpc.netty.NettyChannelProvider'
+        provides 'io.grpc.NameResolverProvider' with 'io.grpc.internal.DnsNameResolverProvider'
     }
 
     options = ['--strip-native-commands', '--strip-java-debug-attributes', '--compress', 'zip-6',
