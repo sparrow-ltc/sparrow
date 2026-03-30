@@ -300,7 +300,7 @@ jlink {
         }
         if(os.macOsX) {
             installerOptions += ['--mac-sign', '--mac-signing-key-user-name', 'Craig Raw (UPLVMSK9D7)']
-            imageOptions += ['--icon', 'src/main/deploy/package/macos/sparrow.icns', '--resource-dir', 'src/main/deploy/package/macos/']
+            imageOptions += ['--icon', 'src/main/deploy/package/macos/sparrow-ltc.icns', '--resource-dir', 'src/main/deploy/package/macos/']
             installerType = "dmg"
         }
     }
