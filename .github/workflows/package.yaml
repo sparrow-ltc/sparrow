@@ -29,7 +29,7 @@ jobs:
         run: ./gradlew jpackage
       - name: Codesign, package and notarize macOS distribution
         if: ${{ runner.os == 'macOS' }}
-        uses: sparrowwallet/github-actions/codesign-macos@v1
+        uses: sparrow-ltc/github-actions/codesign-macos@main
         with:
           app-name: Sparrow-LTC
           certificate: ${{ secrets.MACOS_CERTIFICATE }}
