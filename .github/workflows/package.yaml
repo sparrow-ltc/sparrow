@@ -37,6 +37,7 @@ jobs:
           apple-id: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
           team-id: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
           notarization-password: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
+          identity: 'Apple Development: Hector Chu (M86HTTQ7YG)'
       - name: Package Windows zip distribution
         if: ${{ runner.os == 'Windows' }}
         run: ./gradlew packageZipDistribution
