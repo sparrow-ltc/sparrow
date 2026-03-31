@@ -1,5 +1,5 @@
 #!/bin/sh
-# postinst script for sparrowwallet
+# postinst script for sparrowltcwallet
 #
 # see: dh_installdeb(1)
 
@@ -22,9 +22,9 @@ package_type=deb
 
 case "$1" in
     configure)
-        xdg-desktop-menu install /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC.desktop
-        xdg-mime install /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC-MimeInfo.xml
-        install -D -m 644 /opt/sparrowwallet/lib/runtime/conf/udev/*.rules /etc/udev/rules.d
+        xdg-desktop-menu install /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC.desktop
+        xdg-mime install /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC-MimeInfo.xml
+        install -D -m 644 /opt/sparrowltcwallet/lib/runtime/conf/udev/*.rules /etc/udev/rules.d
         if ! getent group plugdev > /dev/null; then
             groupadd -r plugdev
         fi

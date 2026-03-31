@@ -1,5 +1,5 @@
 Summary: Sparrow-LTC
-Name: sparrowwallet
+Name: sparrowltcwallet
 Version: ${version}
 Release: 1
 License: ASL 2.0
@@ -13,7 +13,7 @@ URL: https://sparrowwallet.com
 Prefix: /opt
 %endif
 
-Provides: sparrowwallet
+Provides: sparrowltcwallet
 Obsoletes: sparrow <= 2.1.4
 
 %if "xutils" != "x"
@@ -51,8 +51,8 @@ Sparrow-LTC Wallet
 
 %install
 rm -rf %{buildroot}
-install -d -m 755 %{buildroot}/opt/sparrowwallet
-cp -r %{_sourcedir}/opt/sparrowwallet/* %{buildroot}/opt/sparrowwallet
+install -d -m 755 %{buildroot}/opt/sparrowltcwallet
+cp -r %{_sourcedir}/opt/sparrowltcwallet/* %{buildroot}/opt/sparrowltcwallet
 if [ "$(echo %{_sourcedir}/lib/systemd/system/*.service)" != '%{_sourcedir}/lib/systemd/system/*.service' ]; then
   install -d -m 755 %{buildroot}/lib/systemd/system
   cp %{_sourcedir}/lib/systemd/system/*.service %{buildroot}/lib/systemd/system
@@ -78,9 +78,9 @@ sed -i -e 's/.*/%dir "&"/' %{package_filelist}
 
 %post
 package_type=rpm
-xdg-desktop-menu install /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC.desktop
-xdg-mime install /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC-MimeInfo.xml
-install -D -m 644 /opt/sparrowwallet/lib/runtime/conf/udev/*.rules /etc/udev/rules.d
+xdg-desktop-menu install /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC.desktop
+xdg-mime install /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC-MimeInfo.xml
+install -D -m 644 /opt/sparrowltcwallet/lib/runtime/conf/udev/*.rules /etc/udev/rules.d
 if ! getent group plugdev > /dev/null; then
     groupadd -r plugdev
 fi
@@ -252,9 +252,9 @@ desktop_trace ()
   echo "$@"
 }
 
-do_if_file_belongs_to_single_package /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC.desktop xdg-desktop-menu uninstall /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC.desktop
-do_if_file_belongs_to_single_package /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC-MimeInfo.xml xdg-mime uninstall /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC-MimeInfo.xml
-do_if_file_belongs_to_single_package /opt/sparrowwallet/lib/sparrowwallet-Sparrow-LTC.desktop desktop_uninstall_default_mime_handler sparrowwallet-Sparrow-LTC.desktop application/psbt application/litecoin-transaction application/pgp-signature x-scheme-handler/litecoin x-scheme-handler/auth47 x-scheme-handler/lightning
+do_if_file_belongs_to_single_package /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC.desktop xdg-desktop-menu uninstall /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC.desktop
+do_if_file_belongs_to_single_package /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC-MimeInfo.xml xdg-mime uninstall /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC-MimeInfo.xml
+do_if_file_belongs_to_single_package /opt/sparrowltcwallet/lib/sparrowltcwallet-Sparrow-LTC.desktop desktop_uninstall_default_mime_handler sparrowltcwallet-Sparrow-LTC.desktop application/psbt application/litecoin-transaction application/pgp-signature x-scheme-handler/litecoin x-scheme-handler/auth47 x-scheme-handler/lightning
 
 
 %clean

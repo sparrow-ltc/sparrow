@@ -1,10 +1,10 @@
-Package: sparrowwallet
+Package: sparrowltcwallet
 Version: ${version}-1
 Section: utils
 Maintainer: Craig Raw <mail@sparrowwallet.com>
 Priority: optional
 Architecture: ${arch}
-Provides: sparrowwallet
+Provides: sparrowltcwallet
 Conflicts: sparrow (<= 2.1.4)
 Replaces: sparrow (<= 2.1.4)
 Description: Sparrow-LTC Wallet

@@ -289,10 +289,10 @@ jlink {
         }
         if(os.linux) {
             if(headless) {
-                installerName = "sparrowserver"
+                installerName = "sparrowltcserver"
                 installerOptions = ['--license-file', 'LICENSE']
             } else {
-                installerName = "sparrowwallet"
+                installerName = "sparrowltcwallet"
                 installerOptions += ['--linux-shortcut', '--linux-menu-group', 'Sparrow-LTC']
             }
             installerOptions += ['--resource-dir', layout.buildDirectory.dir('deploy/package').get().asFile.toString(), '--linux-app-category', 'utils', '--linux-app-release', '1', '--linux-rpm-license-type', 'ASL 2.0', '--linux-deb-maintainer', 'mail@sparrowwallet.com']
@@ -356,7 +356,7 @@ tasks.register('copyMimeInfo', Copy) {
     mustRunAfter tasks.jpackageImage
     from('src/main/deploy/package/linux')
     into(layout.buildDirectory.dir('jpackage/Sparrow-LTC/lib'))
-    include('sparrowwallet-Sparrow-LTC-MimeInfo.xml')
+    include('sparrowltcwallet-Sparrow-LTC-MimeInfo.xml')
 }
 
 static def getDirectorySize(File directory) {
@@ -389,7 +389,7 @@ tasks.register('packageZipDistribution', Zip) {
 
 tasks.register('packageTarDistribution', Tar) {
     dependsOn removeGroupWritePermission
-    archiveFileName = "sparrow${headless ? 'server': 'wallet'}-${version}-${releaseArch}.tar.gz"
+    archiveFileName = "sparrowltc${headless ? 'server': 'wallet'}-${version}-${releaseArch}.tar.gz"
     destinationDirectory = file("$buildDir/jpackage")
     compression = Compression.GZIP
     from("$buildDir/jpackage/") {
