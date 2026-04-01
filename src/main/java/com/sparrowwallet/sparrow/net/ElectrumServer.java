@@ -418,6 +418,7 @@ public class ElectrumServer {
     }
 
     public void getReferences(Wallet wallet, Collection<WalletNode> nodes, Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap, int startIndex) throws ServerException {
+        if(wallet.getScriptType() == ScriptType.MWEB) return;
         try {
             Map<WalletNode, ScriptHashTx[]> nodeHashHistory = new LinkedHashMap<>(nodes.size());
             Map<String, String> pathScriptHashes = new LinkedHashMap<>(nodes.size());
