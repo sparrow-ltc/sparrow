@@ -61,8 +61,8 @@ public class DownloadVerifierDialog extends Dialog<ButtonBar.ButtonData> {
     private static final List<String> DISK_IMAGE_EXTENSIONS = List.of("img", "bin", "dfu");
     private static final List<String> ARCHIVE_EXTENSIONS = List.of("zip", "tar.gz", "tar.bz2", "tar.xz", "rar", "7z");
 
-    private static final String SPARROW_RELEASE_PREFIX = "sparrow-";
-    private static final String[] SPARROW_RELEASE_ALT_PREFIXES = { "sparrowwallet-", "sparrowwallet_", "sparrowserver-", "sparrowserver_" };
+    private static final String SPARROW_RELEASE_PREFIX = "sparrowltc-";
+    private static final String[] SPARROW_RELEASE_ALT_PREFIXES = { "sparrowltcwallet-", "sparrowltcwallet_", "sparrowltcserver-", "sparrowltcserver_" };
     private static final String SPARROW_MANIFEST_SUFFIX = "-manifest.txt";
     private static final String SPARROW_SIGNATURE_SUFFIX = SPARROW_MANIFEST_SUFFIX + ".asc";
     private static final Pattern SPARROW_RELEASE_VERSION = Pattern.compile("[0-9]+(\\.[0-9]+)*");
@@ -103,8 +103,8 @@ public class DownloadVerifierDialog extends Dialog<ButtonBar.ButtonData> {
 
         String version = VersionCheckService.getVersion() != null ? VersionCheckService.getVersion() : "x.x.x";
 
-        Field signatureField = setupField(signature, "Signature", SIGNATURE_EXTENSIONS, false, "sparrow-" + version + "-manifest.txt", null);
-        Field manifestField = setupField(manifest, "Manifest", MANIFEST_EXTENSIONS, false, "sparrow-" + version + "-manifest", manifestDisabled);
+        Field signatureField = setupField(signature, "Signature", SIGNATURE_EXTENSIONS, false, "sparrowltc-" + version + "-manifest.txt", null);
+        Field manifestField = setupField(manifest, "Manifest", MANIFEST_EXTENSIONS, false, "sparrowltc-" + version + "-manifest", manifestDisabled);
         Field publicKeyField = setupField(publicKey, "Public Key", PUBLIC_KEY_EXTENSIONS, true, "pgp_keys", publicKeyDisabled);
         Field releaseFileField = setupField(release, "Release File", getReleaseFileExtensions(), false, getReleaseFileExample(version), null);
 
@@ -128,7 +128,7 @@ public class DownloadVerifierDialog extends Dialog<ButtonBar.ButtonData> {
         releaseVerifiedField.getInputs().add(releaseLink);
         releaseLink.setOnAction(event -> {
             if(release.get() != null && release.get().exists()) {
-                if(release.get().getName().toLowerCase(Locale.ROOT).startsWith("sparrow")) {
+                if(release.get().getName().toLowerCase(Locale.ROOT).startsWith("sparrowltc")) {
                     Optional<ButtonType> optType = AppServices.showAlertDialog("Exit Sparrow-LTC?", "Sparrow-LTC must be closed before installation. Exit?", Alert.AlertType.CONFIRMATION, ButtonType.NO, ButtonType.YES);
                     if(optType.isPresent() && optType.get() == ButtonType.YES) {
                         javafx.application.Platform.exit();
@@ -551,7 +551,7 @@ public class DownloadVerifierDialog extends Dialog<ButtonBar.ButtonData> {
                 return "Sparrow-LTC-" + version;
             }
             default ->  {
-                return "sparrow_" + version + "-1_" + (arch.equals("aarch64") ? "arm64" : arch);
+                return "sparrowltc_" + version + "-1_" + (arch.equals("aarch64") ? "arm64" : arch);
             }
         }
     }
