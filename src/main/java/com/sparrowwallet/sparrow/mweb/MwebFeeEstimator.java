@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
 public class MwebFeeEstimator implements FeeEstimator {
     @Override
     public long calcFeeIncrease(Wallet wallet, Map<BlockTransactionHashIndex, WalletNode> utxos,
-                                List<WalletTransaction.Output> outputs, double feeRate) {
+                                List<WalletTransaction.Output> outputs, double vSize, double feeRate) {
         var tx = MwebServer.get().create(wallet, utxos, outputs, feeRate, true);
         var ins = tx.getInputs().stream().map(TransactionInput::getOutpoint).collect(Collectors.toSet());
         long sumIn = 0, mwebIn = 0;
@@ -26,10 +26,13 @@ public class MwebFeeEstimator implements FeeEstimator {
         long sumOut1 = outputs.stream().mapToLong(out -> out.getTransactionOutput().getValue()).sum();
         long sumOut2 = tx.getOutputs().stream().mapToLong(TransactionOutput::getValue).sum();
         long expectedPegIn = Math.max(0, sumOut1 - mwebIn);
+        long baseFee = (long)Math.floor(feeRate * vSize);
         long feeIncrease = sumOut2 - expectedPegIn;
-        if (expectedPegIn > 0) {
-            feeIncrease += (long)Math.ceil(feeRate * 41);
+        if (feeIncrease > 0 && expectedPegIn > 0) {
+            long pegInTxInFee = (long)Math.ceil(feeRate * 41);
+            baseFee += pegInTxInFee;
+            feeIncrease += pegInTxInFee;
         }
-        return sumIn < sumOut2 ? feeIncrease : 0;
+        return sumIn < sumOut2 + baseFee ? feeIncrease : 0;
     }
 }
