@@ -3,12 +3,8 @@ package com.sparrowwallet.sparrow.mweb;
 import com.google.common.eventbus.Subscribe;
 import com.sparrowwallet.drongo.protocol.Script;
 import com.sparrowwallet.drongo.protocol.ScriptType;
-import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.protocol.Transaction;
-import com.sparrowwallet.drongo.wallet.BlockTransaction;
-import com.sparrowwallet.drongo.wallet.BlockTransactionHashIndex;
-import com.sparrowwallet.drongo.wallet.Wallet;
-import com.sparrowwallet.drongo.wallet.WalletNode;
+import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.OpenWalletsEvent;
@@ -85,12 +81,33 @@ public class MwebSpentChecker {
         }
     }
 
+    private BlockTransaction confirmTxn(Wallet wallet, BlockTransaction txn) {
+        return new BlockTransaction(txn.getHash(), wallet.getStoredBlockHeight(),
+                new Date(), txn.getFee(), txn.getTransaction(), null, txn.getLabel());
+    }
+
+    private BlockTransactionHashIndex confirmTxo(BlockTransaction txn, BlockTransactionHashIndex txo) {
+        var txi = txo.getSpentBy();
+        if (txi != null) {
+            txi = txi.copy();
+            txi.setId(null);
+        }
+        return new BlockTransactionHashIndex(txn.getHash(), txn.getHeight(), txn.getDate(),
+                txn.getFee(), txo.getIndex(), txo.getValue(), txi, txo.getLabel());
+    }
+
     private void checkTxns(Wallet wallet, Storage storage) {
         Platform.runLater(() -> {
             var walletTxns = wallet.getWalletTransactions();
-            var updatedTxns = new HashMap<Sha256Hash, BlockTransaction>();
+            var updatedTxns = wallet.getWalletTxos().keySet().stream()
+                    .filter(BlockTransactionHashIndex::isSpent)
+                    .filter(txo -> txo.getHeight() == 0)
+                    .filter(txo -> txo.getSpentBy().getHeight() > 0)
+                    .map(BlockTransactionHash::getHash).distinct()
+                    .collect(Collectors.toMap(x -> x, x -> confirmTxn(wallet, walletTxns.get(x))));
             outer:
             for (var txn : walletTxns.values()) {
+                if (updatedTxns.containsKey(txn.getHash())) continue;
                 if (txn.getHeight() > 0 || txn.getTransaction().getInputs().isEmpty()) continue;
                 var builder = SpentRequest.newBuilder();
                 for (var in : txn.getTransaction().getInputs()) {
@@ -101,20 +118,35 @@ public class MwebSpentChecker {
                 }
                 var resp = stub.spent(builder.build());
                 if (resp.getOutputIdCount() == txn.getTransaction().getInputs().size()) {
-                    txn = new BlockTransaction(txn.getHash(), wallet.getStoredBlockHeight(),
-                            new Date(), txn.getFee(), txn.getTransaction(), null, txn.getLabel());
-                    updatedTxns.put(txn.getHash(), txn);
+                    updatedTxns.put(txn.getHash(), confirmTxn(wallet, txn));
                 }
             }
             if (!updatedTxns.isEmpty()) {
-                var nodes = new ArrayList<WalletNode>();
-                for (var entry : wallet.getWalletTxos().entrySet()) {
-                    if (updatedTxns.containsKey(entry.getKey().getHash())) {
-                        nodes.add(entry.getValue());
+                var nodes = new HashMap<WalletNode, Set<BlockTransactionHashIndex>>();
+                wallet.getWalletTxos().forEach((txo, node) -> {
+                    var oldTxo = txo;
+                    var txn = updatedTxns.get(txo.getHash());
+                    if (txn != null) {
+                        txo = confirmTxo(txn, txo);
                     }
-                }
+                    if (txo.isSpent()) {
+                        var txi = txo.getSpentBy();
+                        txn = updatedTxns.get(txi.getHash());
+                        if (txn != null) {
+                            txo = txo.copy();
+                            txo.setId(null);
+                            txo.setSpentBy(confirmTxo(txn, txi));
+                        }
+                    }
+                    if (txo != oldTxo) {
+                        var txos = nodes.computeIfAbsent(node, n -> new TreeSet<>(n.getTransactionOutputs()));
+                        txos.remove(oldTxo);
+                        txos.add(txo);
+                    }
+                });
+                nodes.forEach((node, txos) -> node.updateTransactionOutputs(wallet, txos));
                 wallet.updateTransactions(updatedTxns);
-                EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, nodes, List.of()));
+                EventManager.get().post(new WalletHistoryChangedEvent(wallet, storage, nodes.keySet().stream().toList(), List.of()));
                 EventManager.get().post(new WalletDataChangedEvent(wallet));
             }
         });
