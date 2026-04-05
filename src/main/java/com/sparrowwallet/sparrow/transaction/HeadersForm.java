@@ -13,6 +13,7 @@ public class HeadersForm extends TransactionForm {
     }
 
     void setFinalTransaction(Transaction finalTransaction) {
+        txdata.saveTransaction();
         txdata.setTransaction(finalTransaction);
     }
 

@@ -20,6 +20,7 @@ public class TransactionData {
     private BlockTransaction blockTransaction;
     private Map<Sha256Hash, BlockTransaction> inputTransactions;
     private List<BlockTransaction> outputTransactions;
+    private Transaction savedTransaction;
 
     private int minInputFetched;
     private int maxInputFetched;
@@ -52,6 +53,16 @@ public class TransactionData {
 
     public void setTransaction(Transaction transaction) {
         this.transaction = transaction;
+    }
+
+    public Transaction getSavedTransaction() {
+        return savedTransaction;
+    }
+
+    public void saveTransaction() {
+        if(savedTransaction == null) {
+            savedTransaction = transaction;
+        }
     }
 
     public String getName() {

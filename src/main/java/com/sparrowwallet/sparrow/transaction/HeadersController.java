@@ -1241,7 +1241,6 @@ public class HeadersController extends TransactionFormController implements Init
     }
 
     public void broadcastTransaction(ActionEvent event) {
-        var walletTx = headersForm.getTransaction();
         broadcastButton.setDisable(true);
         if(headersForm.getPsbt() != null) {
             if(!extractTransaction()) {
@@ -1274,7 +1273,8 @@ public class HeadersController extends TransactionFormController implements Init
         ElectrumServer.BroadcastTransactionService broadcastTransactionService = new ElectrumServer.BroadcastTransactionService(headersForm.getTransaction(), fee.getValue());
         broadcastTransactionService.setOnSucceeded(workerStateEvent -> {
             if(headersForm.getWallet().getScriptType() == ScriptType.MWEB) {
-                var txn = new BlockTransaction(walletTx.getTxId(), 0, null, fee.getValue(), walletTx, null, headersForm.getName());
+                var tx = headersForm.txdata.getSavedTransaction();
+                var txn = new BlockTransaction(tx.getTxId(), 0, null, fee.getValue(), tx, null, headersForm.getName());
                 headersForm.getWallet().updateTransactions(Map.of(txn.getHash(), txn));
             }
 
