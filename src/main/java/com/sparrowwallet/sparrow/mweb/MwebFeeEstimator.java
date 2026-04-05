@@ -33,6 +33,6 @@ public class MwebFeeEstimator implements FeeEstimator {
             baseFee += pegInTxInFee;
             feeIncrease += pegInTxInFee;
         }
-        return sumIn < sumOut2 + baseFee ? feeIncrease : 0;
+        return Math.clamp(sumOut2 + baseFee - sumIn, 0, feeIncrease);
     }
 }
