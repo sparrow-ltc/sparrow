@@ -4,12 +4,14 @@ import com.sparrowwallet.drongo.KeyPurpose;
 import com.sparrowwallet.drongo.OsType;
 import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.address.Address;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.silentpayments.SilentPayment;
 import com.sparrowwallet.drongo.silentpayments.SilentPaymentAddress;
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
+import com.sparrowwallet.sparrow.UnitFormat;
 import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.io.Config;
@@ -18,6 +20,7 @@ import javafx.application.Platform;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.geometry.Pos;
+import javafx.scene.AccessibleAttribute;
 import javafx.scene.control.*;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
@@ -28,15 +31,18 @@ import org.controlsfx.glyphfont.Glyph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.security.SecureRandom;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class EntryCell extends TreeTableCell<Entry, Entry> implements ConfirmationsListener {
     private static final Logger log = LoggerFactory.getLogger(EntryCell.class);
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     public static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm");
     public static final Pattern REPLACED_BY_FEE_SUFFIX = Pattern.compile("(.*?)( \\(Replaced By Fee( #)?(\\d+)?\\)).*?");
@@ -96,6 +102,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                 actionBox.getStyleClass().add("cell-actions");
                 Button viewTransactionButton = new Button("");
                 viewTransactionButton.setGraphic(getViewTransactionGlyph());
+                viewTransactionButton.setAccessibleText("View Transaction");
                 viewTransactionButton.setOnAction(event -> {
                     EventManager.get().post(new ViewTransactionEvent(this.getScene().getWindow(), transactionEntry.getBlockTransaction()));
                 });
@@ -106,6 +113,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                         Config.get().isIncludeMempoolOutputs() && transactionEntry.getWallet().allInputsFromWallet(blockTransaction.getHash())) {
                     Button increaseFeeButton = new Button("");
                     increaseFeeButton.setGraphic(getIncreaseFeeRBFGlyph());
+                    increaseFeeButton.setAccessibleText("Increase Fee (RBF)");
                     increaseFeeButton.setOnAction(event -> {
                         increaseFee(transactionEntry, false);
                     });
@@ -115,6 +123,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                 if(blockTransaction.getHeight() <= 0 && containsWalletOutputs(transactionEntry)) {
                     Button cpfpButton = new Button("");
                     cpfpButton.setGraphic(getIncreaseFeeCPFPGlyph());
+                    cpfpButton.setAccessibleText("Increase Effective Fee (CPFP)");
                     cpfpButton.setOnAction(event -> {
                         createCpfp(transactionEntry);
                     });
@@ -135,9 +144,10 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                 HBox actionBox = new HBox();
                 actionBox.getStyleClass().add("cell-actions");
 
-                if(!nodeEntry.getNode().getWallet().isBip47()) {
+                if(!nodeEntry.getNode().getWallet().isBip47() && nodeEntry.getNode().getWallet().getPolicyType() != PolicyType.SINGLE_SP) {
                     Button receiveButton = new Button("");
                     receiveButton.setGraphic(getReceiveGlyph());
+                    receiveButton.setAccessibleText("Receive To");
                     receiveButton.setOnAction(event -> {
                         EventManager.get().post(new ReceiveActionEvent(nodeEntry));
                         Platform.runLater(() -> EventManager.get().post(new ReceiveToEvent(nodeEntry)));
@@ -148,6 +158,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                 if(canSignMessage(nodeEntry.getNode())) {
                     Button signMessageButton = new Button("");
                     signMessageButton.setGraphic(getSignMessageGlyph());
+                    signMessageButton.setAccessibleText("Sign/Verify Message");
                     signMessageButton.setOnAction(event -> {
                         MessageSignDialog messageSignDialog = new MessageSignDialog(nodeEntry.getWallet(), nodeEntry.getNode());
                         messageSignDialog.initOwner(getTreeTableView().getScene().getWindow());
@@ -175,6 +186,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                 actionBox.getStyleClass().add("cell-actions");
                 Button viewTransactionButton = new Button("");
                 viewTransactionButton.setGraphic(getViewTransactionGlyph());
+                viewTransactionButton.setAccessibleText("View Transaction");
                 viewTransactionButton.setOnAction(event -> {
                     EventManager.get().post(new ViewTransactionEvent(this.getScene().getWindow(), hashIndexEntry.getBlockTransaction(), hashIndexEntry));
                 });
@@ -183,6 +195,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                 if(hashIndexEntry.getType().equals(HashIndexEntry.Type.OUTPUT) && hashIndexEntry.isSpendable() && !hashIndexEntry.getHashIndex().isSpent()) {
                     Button spendUtxoButton = new Button("");
                     spendUtxoButton.setGraphic(getSendGlyph());
+                    spendUtxoButton.setAccessibleText("Send Selected");
                     spendUtxoButton.setOnAction(event -> {
                         sendSelectedUtxos(getTreeTableView(), hashIndexEntry);
                     });
@@ -192,6 +205,15 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
                 setGraphic(getTreeTableView().getStyleClass().contains("bip47") ? null : actionBox);
             }
         }
+    }
+
+    @Override
+    public Object queryAccessibleAttribute(AccessibleAttribute attribute, Object... parameters) {
+        if(attribute == AccessibleAttribute.HELP && getContextMenu() != null && getTreeTableView() instanceof CoinTreeTable) {
+            return CoinTreeTable.withRowActionsHelp(super.queryAccessibleAttribute(attribute, parameters));
+        }
+
+        return super.queryAccessibleAttribute(attribute, parameters);
     }
 
     @Override
@@ -238,7 +260,8 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         List<TransactionOutput> consolidationOutputs = transactionEntry.getChildren().stream()
                 .filter(e -> e instanceof HashIndexEntry)
                 .map(e -> (HashIndexEntry)e)
-                .filter(e -> e.getType().equals(HashIndexEntry.Type.OUTPUT) && e.getKeyPurpose() == KeyPurpose.RECEIVE)
+                //A single output back to the wallet is a consolidation on either chain, a CPFP child sweeping to a change address included
+                .filter(e -> e.getType().equals(HashIndexEntry.Type.OUTPUT) && (e.getKeyPurpose() == KeyPurpose.RECEIVE || blockTransaction.getTransaction().getOutputs().size() == 1))
                 .map(e -> blockTransaction.getTransaction().getOutputs().get((int)e.getHashIndex().getIndex()))
                 .collect(Collectors.toList());
 
@@ -249,7 +272,7 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         double vSize = tx.getVirtualSize();
         if(changeTotal == 0) {
             //Add change output length to vSize if change was not present on the original transaction
-            TransactionOutput changeOutput = new TransactionOutput(new Transaction(), 1L, transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getOutputScript());
+            TransactionOutput changeOutput = new TransactionOutput(new Transaction(), 1L, transactionEntry.getWallet().getNode(KeyPurpose.CHANGE).getOutputScript());
             vSize += changeOutput.getLength();
         }
         double inputSize = tx.getInputs().get(0).getLength() + (tx.getInputs().get(0).hasWitness() ? (double)tx.getInputs().get(0).getWitness().getLength() / Transaction.WITNESS_SCALE_FACTOR : 0);
@@ -257,8 +280,11 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         double feeRate = blockTransaction.getFeeRate() == null ? AppServices.getMinimumRelayFeeRate() : blockTransaction.getFeeRate();
         List<OutputGroup> outputGroups = transactionEntry.getWallet().getGroupedUtxos(txoFilters, feeRate, AppServices.getMinimumRelayFeeRate(), Config.get().isGroupByAddress())
                 .stream().filter(outputGroup -> outputGroup.getEffectiveValue() >= 0).collect(Collectors.toList());
-        Collections.shuffle(outputGroups);
-        while((double)changeTotal / vSize < getMaxFeeRate() && !outputGroups.isEmpty() && !cancelTransaction && !consolidationTransaction && safeToAddInputsOrOutputs) {
+        Collections.shuffle(outputGroups, SECURE_RANDOM);
+
+        //Replacement tx fees must also cover the fees of the unconfirmed wallet transactions spending its outputs, which are replaced along with it
+        long descendantFees = getUnconfirmedDescendantFees(transactionEntry.getWallet(), walletTxos.keySet(), blockTransaction.getHash(), new HashSet<>());
+        while((double)(changeTotal - descendantFees) / vSize < getMaxFeeRate() && !outputGroups.isEmpty() && !cancelTransaction && !consolidationTransaction && safeToAddInputsOrOutputs) {
             //If there is insufficient change output, include another random output group so the fee can be increased
             OutputGroup outputGroup = outputGroups.remove(0);
             for(BlockTransactionHashIndex utxo : outputGroup.getUtxos()) {
@@ -270,6 +296,8 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
         Long fee = blockTransaction.getFee();
         if(fee != null) {
+            fee += descendantFees;
+
             //Replacement tx fees must be greater than the original tx fees by its minimum relay cost
             fee += (long)Math.ceil(vSize * AppServices.getMinimumRelayFeeRate());
         }
@@ -334,8 +362,10 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
         if(cancelTransaction) {
             Payment existing = payments.get(0);
-            Address address = transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getAddress();
-            Payment payment = new Payment(address, existing.getLabel(), existing.getAmount(), true);
+            Payment payment = transactionEntry.getWallet().getPolicyType() == PolicyType.SINGLE_SP ?
+                    new SilentPayment(transactionEntry.getWallet().getSilentPaymentScanAddress().getChangeAddress().getSilentPaymentAddress(),
+                            existing.getLabel(), existing.getAmount(), true) :
+                    new Payment(transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getAddress(), existing.getLabel(), existing.getAmount(), true);
             payments.clear();
             payments.add(payment);
             opReturns.clear();
@@ -351,6 +381,25 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         }
 
         return AppServices.getTargetBlockFeeRates().values().iterator().next();
+    }
+
+    private static long getUnconfirmedDescendantFees(Wallet wallet, Collection<BlockTransactionHashIndex> walletTxos, Sha256Hash txid, Set<Sha256Hash> visited) {
+        long fees = 0;
+        for(BlockTransactionHashIndex txo : walletTxos) {
+            if(txo.getHash().equals(txid) && txo.getSpentBy() != null && visited.add(txo.getSpentBy().getHash())) {
+                BlockTransaction child = wallet.getWalletTransaction(txo.getSpentBy().getHash());
+                if(child == null || child.getHeight() <= 0) {
+                    //A descendant whose fee is unknown adds nothing, so the total is a lower bound, but the descendants spending it are replaced all the same
+                    if(child != null && child.getFee() != null) {
+                        fees += child.getFee();
+                    }
+
+                    fees += getUnconfirmedDescendantFees(wallet, walletTxos, txo.getSpentBy().getHash(), visited);
+                }
+            }
+        }
+
+        return fees;
     }
 
     private static void createCpfp(TransactionEntry transactionEntry) {
@@ -369,17 +418,17 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
         }
 
         BlockTransactionHashIndex cpfpUtxo = ourOutputs.get(0);
-        Address freshAddress = transactionEntry.getWallet().getFreshNode(KeyPurpose.RECEIVE).getAddress();
-        TransactionOutput txOutput = new TransactionOutput(new Transaction(), cpfpUtxo.getValue(), freshAddress.getOutputScript());
-        long dustThreshold = freshAddress.getScriptType().getDustThreshold(txOutput, Transaction.DUST_RELAY_TX_FEE);
-        double inputSize = freshAddress.getScriptType().getInputVbytes();
+        Address receiveAddress = transactionEntry.getWallet().getNode(KeyPurpose.RECEIVE).getAddress();
+        TransactionOutput txOutput = new TransactionOutput(new Transaction(), cpfpUtxo.getValue(), receiveAddress.getOutputScript());
+        long dustThreshold = receiveAddress.getScriptType().getDustThreshold(txOutput, Transaction.DUST_RELAY_TX_FEE);
+        double inputSize = receiveAddress.getScriptType().getInputVbytes();
         double vSize = inputSize + txOutput.getLength();
 
         List<TxoFilter> txoFilters = List.of(new ExcludeTxoFilter(List.of(cpfpUtxo)), new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(transactionEntry.getWallet()), new MwebPegoutTxoFilter(transactionEntry.getWallet()));
         double feeRate = blockTransaction.getFeeRate() == null ? AppServices.getMinimumRelayFeeRate() : blockTransaction.getFeeRate();
         List<OutputGroup> outputGroups = transactionEntry.getWallet().getGroupedUtxos(txoFilters, feeRate, AppServices.getMinimumRelayFeeRate(), Config.get().isGroupByAddress())
                 .stream().filter(outputGroup -> outputGroup.getEffectiveValue() >= 0).collect(Collectors.toList());
-        Collections.shuffle(outputGroups);
+        Collections.shuffle(outputGroups, SECURE_RANDOM);
 
         List<BlockTransactionHashIndex> utxos = new ArrayList<>();
         utxos.add(cpfpUtxo);
@@ -396,7 +445,10 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
         String label = transactionEntry.getLabel() == null ? "" : transactionEntry.getLabel();
         label += (label.isEmpty() ? "" : " ") + "(CPFP)";
-        Payment payment = new Payment(freshAddress, label, inputTotal, true);
+        Payment payment = transactionEntry.getWallet().getPolicyType() == PolicyType.SINGLE_SP ?
+                new SilentPayment(transactionEntry.getWallet().getSilentPaymentScanAddress().getChangeAddress().getSilentPaymentAddress(),
+                        label, inputTotal, true) :
+                new Payment(transactionEntry.getWallet().getFreshNode(KeyPurpose.CHANGE).getAddress(), label, inputTotal, true);
 
         EventManager.get().post(new SendActionEvent(transactionEntry.getWallet(), utxos));
         Platform.runLater(() -> EventManager.get().post(new SpendUtxoEvent(transactionEntry.getWallet(), utxos, List.of(payment), null, blockTransaction.getFee(), true, null, true)));
@@ -408,7 +460,8 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
     private static boolean canSignMessage(WalletNode walletNode) {
         Wallet wallet = walletNode.getWallet();
-        return wallet.getKeystores().size() == 1 && (!wallet.isBip47() || walletNode.getKeyPurpose() == KeyPurpose.RECEIVE);
+        PolicyType policyType = wallet.getPolicyType();
+        return (policyType == PolicyType.SINGLE_HD || policyType == PolicyType.SINGLE_SP) && (!wallet.isBip47() || walletNode.getKeyPurpose() == KeyPurpose.RECEIVE);
     }
 
     private static boolean containsWalletOutputs(TransactionEntry transactionEntry) {
@@ -474,23 +527,24 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
     private String getTooltip(TransactionEntry transactionEntry) {
         String tooltip = transactionEntry.getBlockTransaction().getHash().toString();
         if(transactionEntry.getBlockTransaction().getHeight() <= 0) {
+            UnitFormat format = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
             Double feeRate = transactionEntry.getBlockTransaction().getFeeRate();
             Long vSizefromTip = transactionEntry.getVSizeFromTip();
             if(feeRate != null && vSizefromTip != null) {
                 long blocksFromTip = (long)Math.ceil((double)vSizefromTip / Transaction.MAX_BLOCK_SIZE_VBYTES);
 
-                String amount = vSizefromTip + " vB";
+                String amount = format.formatSatsValue(vSizefromTip) + " vB";
                 if(vSizefromTip > 1000 * 1000) {
-                    amount = String.format("%.2f", (double)vSizefromTip / (1000 * 1000)) + " MvB";
+                    amount = format.formatDecimalValue((double)vSizefromTip / (1000 * 1000), 2) + " MvB";
                 } else if(vSizefromTip > 1000) {
-                    amount = String.format("%.2f", (double)vSizefromTip / 1000) + " kvB";
+                    amount = format.formatDecimalValue((double)vSizefromTip / 1000, 2) + " kvB";
                 }
 
                 tooltip += "\nConfirms in: " + (blocksFromTip > 1 ? blocksFromTip + "+ blocks" : "1 block") + " (" + amount + " from tip)";
             }
 
             if(feeRate != null) {
-                tooltip += "\nFee rate: " + String.format("%.2f", feeRate) + " lits/vB";
+                tooltip += "\nFee rate: " + format.formatDecimalValue(feeRate, 2) + " lits/vB";
             }
 
             tooltip += "\nRBF: " + (canRBF(transactionEntry.getBlockTransaction(), transactionEntry.getWallet()) ? "Enabled" : "Disabled");
@@ -681,60 +735,65 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
     public static class AddressContextMenu extends ContextMenu {
         public AddressContextMenu(Address address, String outputDescriptor, NodeEntry nodeEntry, boolean addUtxoItems, TreeTableView<Entry> treetable) {
-            if(nodeEntry == null || !nodeEntry.getWallet().isBip47()) {
+            this(address, outputDescriptor, nodeEntry == null ? null : nodeEntry.getWallet(), nodeEntry == null ? null : nodeEntry.getNode(), () -> nodeEntry, addUtxoItems, treetable);
+        }
+
+        public AddressContextMenu(Address address, String outputDescriptor, Wallet wallet, WalletNode node, Supplier<NodeEntry> nodeEntrySupplier, boolean addUtxoItems, TreeTableView<Entry> treetable) {
+            if(node == null || (!wallet.isBip47() && wallet.getPolicyType() != PolicyType.SINGLE_SP)) {
                 MenuItem receiveToAddress = new MenuItem("Receive To");
                 receiveToAddress.setGraphic(getReceiveGlyph());
                 receiveToAddress.setOnAction(event -> {
                     hide();
+                    NodeEntry nodeEntry = nodeEntrySupplier.get();
                     EventManager.get().post(new ReceiveActionEvent(nodeEntry));
                     Platform.runLater(() -> EventManager.get().post(new ReceiveToEvent(nodeEntry)));
                 });
                 getItems().add(receiveToAddress);
             }
 
-            if(nodeEntry != null && canSignMessage(nodeEntry.getNode())) {
+            if(node != null && canSignMessage(node)) {
                 MenuItem signVerifyMessage = new MenuItem("Sign/Verify Message");
                 signVerifyMessage.setGraphic(getSignMessageGlyph());
                 signVerifyMessage.setOnAction(AE -> {
                     hide();
-                    MessageSignDialog messageSignDialog = new MessageSignDialog(nodeEntry.getWallet(), nodeEntry.getNode());
+                    MessageSignDialog messageSignDialog = new MessageSignDialog(wallet, node);
                     messageSignDialog.initOwner(treetable.getScene().getWindow());
                     messageSignDialog.showAndWait();
                 });
                 getItems().add(signVerifyMessage);
             }
 
-            if(addUtxoItems && nodeEntry != null && !nodeEntry.getNode().getUnspentTransactionOutputs().isEmpty()) {
-                List<BlockTransactionHashIndex> utxos = nodeEntry.getNode().getUnspentTransactionOutputs().stream().collect(Collectors.toList());
+            if(addUtxoItems && node != null && !node.getUnspentTransactionOutputs().isEmpty()) {
+                List<BlockTransactionHashIndex> utxos = node.getUnspentTransactionOutputs().stream().collect(Collectors.toList());
                 MenuItem spendUtxos = new MenuItem("Spend UTXOs");
                 spendUtxos.setGraphic(getSendGlyph());
                 spendUtxos.setOnAction(AE -> {
                     hide();
-                    EventManager.get().post(new SendActionEvent(nodeEntry.getWallet(), utxos));
-                    Platform.runLater(() -> EventManager.get().post(new SpendUtxoEvent(nodeEntry.getWallet(), utxos)));
+                    EventManager.get().post(new SendActionEvent(wallet, utxos));
+                    Platform.runLater(() -> EventManager.get().post(new SpendUtxoEvent(wallet, utxos)));
                 });
                 getItems().add(spendUtxos);
 
-                List<BlockTransactionHashIndex> unfrozenUtxos = nodeEntry.getNode().getUnspentTransactionOutputs().stream().filter(utxo -> utxo.getStatus() != Status.FROZEN).collect(Collectors.toList());
+                List<BlockTransactionHashIndex> unfrozenUtxos = node.getUnspentTransactionOutputs().stream().filter(utxo -> utxo.getStatus() != Status.FROZEN).collect(Collectors.toList());
                 if(!unfrozenUtxos.isEmpty()) {
                     MenuItem freezeUtxos = new MenuItem("Freeze UTXOs");
                     freezeUtxos.setGraphic(getFreezeGlyph());
                     freezeUtxos.setOnAction(AE -> {
                         hide();
                         unfrozenUtxos.forEach(utxo -> utxo.setStatus(Status.FROZEN));
-                        EventManager.get().post(new WalletUtxoStatusChangedEvent(nodeEntry.getWallet(), unfrozenUtxos));
+                        EventManager.get().post(new WalletUtxoStatusChangedEvent(wallet, unfrozenUtxos));
                     });
                     getItems().add(freezeUtxos);
                 }
 
-                List<BlockTransactionHashIndex> frozenUtxos = nodeEntry.getNode().getUnspentTransactionOutputs().stream().filter(utxo -> utxo.getStatus() == Status.FROZEN).collect(Collectors.toList());
+                List<BlockTransactionHashIndex> frozenUtxos = node.getUnspentTransactionOutputs().stream().filter(utxo -> utxo.getStatus() == Status.FROZEN).collect(Collectors.toList());
                 if(!frozenUtxos.isEmpty()) {
                     MenuItem unfreezeUtxos = new MenuItem("Unfreeze UTXOs");
                     unfreezeUtxos.setGraphic(getUnfreezeGlyph());
                     unfreezeUtxos.setOnAction(AE -> {
                         hide();
                         frozenUtxos.forEach(utxo -> utxo.setStatus(null));
-                        EventManager.get().post(new WalletUtxoStatusChangedEvent(nodeEntry.getWallet(), frozenUtxos));
+                        EventManager.get().post(new WalletUtxoStatusChangedEvent(wallet, frozenUtxos));
                     });
                     getItems().add(unfreezeUtxos);
                 }
@@ -758,11 +817,11 @@ public class EntryCell extends TreeTableCell<Entry, Entry> implements Confirmati
 
             getItems().addAll(copyAddress, copyOutputDescriptor);
 
-            if(nodeEntry != null) {
+            if(node != null) {
                 MenuItem copyHex = new MenuItem("Copy Script Output Bytes");
                 copyHex.setOnAction(AE -> {
                     hide();
-                    Script outputScript = nodeEntry.getWallet().getOutputScript(nodeEntry.getNode());
+                    Script outputScript = wallet.getOutputScript(node);
                     ClipboardContent content = new ClipboardContent();
                     content.putString(Utils.bytesToHex(outputScript.getProgram()));
                     Clipboard.getSystemClipboard().setContent(content);

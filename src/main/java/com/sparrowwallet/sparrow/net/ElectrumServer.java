@@ -10,9 +10,15 @@ import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.bip47.InvalidPaymentCodeException;
 import com.sparrowwallet.drongo.bip47.PaymentCode;
 import com.sparrowwallet.drongo.protocol.*;
+import com.sparrowwallet.drongo.crypto.ECKey;
+import com.sparrowwallet.drongo.silentpayments.InvalidSilentPaymentException;
+import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanAddress;
+import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanMatch;
+import com.sparrowwallet.drongo.silentpayments.SilentPaymentUtils;
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.BlockSummary;
+import com.sparrowwallet.sparrow.ChainTip;
 import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.io.Config;
@@ -20,6 +26,7 @@ import com.sparrowwallet.sparrow.io.Server;
 import com.sparrowwallet.sparrow.mweb.MwebServer;
 import com.sparrowwallet.sparrow.net.cormorant.Cormorant;
 import com.sparrowwallet.sparrow.net.cormorant.bitcoind.CormorantBitcoindException;
+import com.sparrowwallet.sparrow.net.cormorant.bitcoind.CormorantBitcoindUnsupportedException;
 import com.sparrowwallet.sparrow.paynym.PayNym;
 import com.sparrowwallet.sparrow.paynym.PayNymService;
 import io.grpc.StatusRuntimeException;
@@ -38,8 +45,10 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -49,7 +58,7 @@ import java.util.stream.Stream;
 public class ElectrumServer {
     private static final Logger log = LoggerFactory.getLogger(ElectrumServer.class);
 
-    private static final String[] SUPPORTED_VERSIONS = new String[]{"1.3", "1.4.2"};
+    static final String[] SUPPORTED_VERSIONS = new String[]{"1.3", "1.4.2"};
 
     private static final Version ELECTRS_MIN_BATCHING_VERSION = new Version("0.9.0");
 
@@ -61,37 +70,134 @@ public class ElectrumServer {
 
     private static final int MINIMUM_BROADCASTS = 2;
 
+    private static final int[] NO_LABELS = new int[0];
+
     public static final BlockTransaction UNFETCHABLE_BLOCK_TRANSACTION = new BlockTransaction(Sha256Hash.ZERO_HASH, 0, null, null, null);
 
-    private static CloseableTransport transport;
+    static CloseableTransport transport;
 
-    private static final Map<String, List<String>> subscribedScriptHashes = new ConcurrentHashMap<>();
+    private static final Map<String, String> subscribedScriptHashes = Collections.synchronizedMap(new HashMap<>());
 
     private static Server previousServer;
 
-    private static final Map<String, String> retrievedScriptHashes = Collections.synchronizedMap(new HashMap<>());
+    static final Map<String, String> retrievedScriptHashes = Collections.synchronizedMap(new HashMap<>());
 
     private static final Map<Sha256Hash, BlockTransaction> retrievedTransactions = new ConcurrentHashMap<>();
 
-    private static final Map<Integer, BlockHeader> retrievedBlockHeaders = new ConcurrentHashMap<>();
+    static final Map<Integer, BlockHeader> retrievedBlockHeaders = new ConcurrentHashMap<>();
 
     private static final Map<Sha256Hash, BlockTransaction> broadcastedTransactions = new ConcurrentHashMap<>();
 
     private static final Set<String> sameHeightTxioScriptHashes = ConcurrentHashMap.newKeySet();
 
+    static final Set<String> reorgInvalidatedScriptHashes = ConcurrentHashMap.newKeySet();
+
+    static volatile HeaderStore headerStore;
+
+    //Not the ElectrumServer class monitor that getTransport() uses: a store load or re-walk would then block every transport acquisition for its duration
+    private static final Object headerStoreLock = new Object();
+
+    //Serialises fetch and append across the header sync service and the wallet history threads, which sync concurrently by design
+    private static final Object headerSyncLock = new Object();
+
+    //Session cache of headers below the last pin, verified by hash linkage to it and deliberately never persisted
+    static final Map<Integer, BlockHeader> verifiedHistoricalHeaders = new ConcurrentHashMap<>();
+
+    //Session cache of the transactions proven at a height, keyed by the pair proven. Kept across servers, since a proof reconstructs a header the
+    //compiled in checkpoints anchor rather than anything the server that supplied it vouches for, and dropped only where a reorg replaces the block
+    static final Map<String, BlockHeader> provenTransactionHeaders = new ConcurrentHashMap<>();
+
+    //Counts the rewinds of the header store, so that a proof can tell whether one happened while it was being obtained. Written under headerSyncLock
+    static volatile int reorgCount;
+
+    //The deepest fork point the store has been rewound to this session, or that a wallet loaded in it was found to hold a proof from above, at or above
+    //which a stored height may have been proven against an orphaned header. Written only under headerSyncLock, which is what makes the min atomic;
+    //volatile is for the readers that do not take it
+    static volatile int lastReorgForkHeight = Integer.MAX_VALUE;
+
+    private static final Map<Integer, WalletSyncLock> walletSyncLocks = Collections.synchronizedMap(new HashMap<>());
+
+    private static final Map<String, SilentPaymentsScanCache> spScanCaches = new ConcurrentHashMap<>();
+
+    private static final int TAPROOT_ACTIVATION_HEIGHT = 709632;
+
+    private static final int HEADERS_CHUNK_SIZE = HeaderChainState.RETARGET_INTERVAL;
+
+    //A reorg deeper than this is a global event rather than a client concern, and the store keeps the heavier chain it already has
+    private static final int MAX_REORG_DEPTH = 100;
+
+    //Consensus rejects blocks timestamped more than 2 hours in the future, extended here to allow for local clock skew
+    private static final long MAXIMUM_FUTURE_TIP_TIME_SECS = 4 * 60 * 60;
+
+    //A gap of over 2 hours between mainnet blocks occurs naturally roughly once every 3 years
+    private static final long STALE_TIP_WARNING_AGE_MILLIS = 2 * 60 * 60 * 1000;
+
+    private static final long TIP_WARNING_INTERVAL_MILLIS = 60 * 1000;
+
+    private static volatile long lastTipReceivedAt;
+
+    private static volatile boolean staleTipWarned;
+
+    private static volatile boolean invalidTipWarned;
+
+    //Whether the connected server has announced a tip at or above the last pinned header, which the chain cannot then rewind below
+    static volatile boolean tipReachedCheckpoints;
+
+    private static volatile long lastTipWarningLoggedAt;
+
+    //A server refusing for capacity recovers within these attempts, one that cannot substantiate a height never does. Not final so tests need not wait
+    static int proofAttempts = 4;
+
+    static long proofRetryDelayMillis = 2000;
+
+    //Filters the dialogs rather than the verification, so the passes that re-attempt a refused transaction do not raise it again
+    static final Set<String> proofWarnedPairs = ConcurrentHashMap.newKeySet();
+
+    //Tracked apart, since being proven wrong must still be raised where the pair was only refused on an earlier pass, while the reverse adds nothing
+    static final Set<String> proofsShownFalseWarnedPairs = ConcurrentHashMap.newKeySet();
+
     private final static Map<String, Integer> subscribedRecent = new ConcurrentHashMap<>();
 
     private final static Map<String, String> broadcastRecent = new ConcurrentHashMap<>();
 
-    private static ElectrumServerRpc electrumServerRpc = new SimpleElectrumServerRpc();
+    final static Map<String, BlockTransaction> confirmingRecent = new ConcurrentHashMap<>();
+
+    static final int RECENT_BROADCAST_MAX_DELAY_SECS = 600;
+
+    private static volatile RecentTransactions latestRecent;
+
+    static ElectrumServerRpc electrumServerRpc = new SimpleElectrumServerRpc();
 
     private static Cormorant cormorant;
 
     private static Server coreElectrumServer;
 
-    private static ServerCapability serverCapability;
+    static ServerCapability serverCapability;
 
     private static final Pattern RPC_WALLET_LOADING_PATTERN = Pattern.compile(".*\"(Wallet loading failed[:.][^\"]*)\".*");
+
+    //Per pass, since one ElectrumServer is built per history task. A demoted height reads as changed to the next of the several gated calls in a
+    //pass, so without this memo each would spend the retries on it again
+    private final Set<BlockTransactionHash> refusedThisPass = new HashSet<>();
+
+    //Keyed by wallet, since one task runs the master and each nested child. Held no longer than the task: postProofEvents removes each key in the
+    //finally that closes the wallet it was added under, and the instance is a local of a Task.call()
+    private final Map<Wallet, Set<BlockTransactionHash>> failed = new LinkedHashMap<>();
+
+    private final Map<Wallet, Set<BlockTransactionHash>> refused = new LinkedHashMap<>();
+
+    //The nodes this task demoted a height in. Their outputs disagree with the server's status by construction, so the changed history check must not
+    //count them: a wallet whose used nodes are all demoted would otherwise abort into a full refresh on every open, the demotion being stored
+    private final Set<String> demotedScriptHashes = new HashSet<>();
+
+    //Per pass, since each of the several calls a pass makes to getReferencedTransactions judges every unconfirmed reference it has collected so far.
+    //Only what stays true as the gap limit derives more addresses is kept: an unsigned spend stays unsigned, while one that was not yet seen to spend
+    //from this wallet may do so once another address is derived. The transactions a taproot spend commits to are kept so they are fetched only once
+    private final Map<Wallet, Set<Sha256Hash>> unsignedThisPass = new HashMap<>();
+
+    private final Map<Sha256Hash, Transaction> spentTransactionsThisPass = new HashMap<>();
+
+    private static final Set<Sha256Hash> unsignedWarnedTxids = ConcurrentHashMap.newKeySet();
 
     private static synchronized CloseableTransport getTransport() throws ServerException {
         if(transport == null) {
@@ -129,10 +235,7 @@ public class ElectrumServer {
 
                 //If changing server, don't rely on previous transaction history
                 if(previousServer != null && !electrumServer.equals(previousServer)) {
-                    retrievedScriptHashes.clear();
-                    retrievedTransactions.clear();
-                    retrievedBlockHeaders.clear();
-                    TransactionHistoryService.walletLocks.values().forEach(walletLock -> walletLock.initialized = false);
+                    clearPreviousServerState();
                 }
                 previousServer = electrumServer;
 
@@ -162,6 +265,24 @@ public class ElectrumServer {
         return transport;
     }
 
+    /**
+     * Forgets what the previous server told us on changing to another, including which of its claims were shown unproven: the dialogs ask the user to
+     * switch servers, so the new one is judged afresh. Verified headers are not forgotten, being claims about the chain rather than about the server.
+     */
+    static void clearPreviousServerState() {
+        retrievedScriptHashes.clear();
+        retrievedTransactions.clear();
+        retrievedBlockHeaders.clear();
+        reorgInvalidatedScriptHashes.clear();
+        proofWarnedPairs.clear();
+        proofsShownFalseWarnedPairs.clear();
+        unsignedWarnedTxids.clear();
+        walletSyncLocks.values().forEach(syncLock -> {
+            syncLock.scriptHashesInitialized = false;
+            syncLock.storedProofsChecked = false;
+        });
+    }
+
     public void connect() throws ServerException {
         CloseableTransport closeableTransport = getTransport();
         closeableTransport.connect();
@@ -173,6 +294,10 @@ public class ElectrumServer {
 
     public List<String> getServerVersion() throws ServerException {
         return electrumServerRpc.getServerVersion(getTransport(), "Sparrow-LTC", SUPPORTED_VERSIONS);
+    }
+
+    public ServerFeatures getServerFeatures() throws ServerException {
+        return electrumServerRpc.getServerFeatures(getTransport());
     }
 
     public String getServerBanner() throws ServerException {
@@ -194,6 +319,8 @@ public class ElectrumServer {
 
     public static synchronized void closeActiveConnection() throws ServerException {
         if(transport != null) {
+            cancelSilentPaymentScans();
+            spScanCaches.clear();
             closeConnection(transport);
             transport = null;
         }
@@ -239,7 +366,7 @@ public class ElectrumServer {
         calculatedScriptHashes.put(scriptHash, scriptHashStatus);
     }
 
-    private static String getScriptHashStatus(String scriptHash, WalletNode walletNode) {
+    static String getScriptHashStatus(String scriptHash, WalletNode walletNode) {
         List<ScriptHashTx> scriptHashTxes = getScriptHashes(scriptHash, walletNode);
         return getScriptHashStatus(scriptHashTxes);
     }
@@ -251,7 +378,7 @@ public class ElectrumServer {
         txos.removeIf(ref -> !unique.add(ref.getHash()));
         txos.sort((txo1, txo2) -> {
             if(txo1.getHeight() != txo2.getHeight()) {
-                return txo1.getComparisonHeight() - txo2.getComparisonHeight();
+                return txo1.compareHeight(txo2);
             }
 
             if(txo1.isSpent() && txo1.getSpentBy().equals(txo2)) {
@@ -268,10 +395,10 @@ public class ElectrumServer {
             return 0;
         });
 
-        return txos.stream().map(txo -> new ScriptHashTx(txo.getHeight(), txo.getHashAsString(), txo.getFee() == null ? 0 : txo.getFee())).toList();
+        return txos.stream().map(txo -> new ScriptHashTx(txo.getHeight(), txo.getHashAsString(), txo.getFee())).toList();
     }
 
-    private static String getScriptHashStatus(List<ScriptHashTx> scriptHashTxes) {
+    static String getScriptHashStatus(List<ScriptHashTx> scriptHashTxes) {
         if(!scriptHashTxes.isEmpty()) {
             StringBuilder scriptHashStatus = new StringBuilder();
             for(ScriptHashTx scriptHashTx : scriptHashTxes) {
@@ -287,12 +414,248 @@ public class ElectrumServer {
     public static void clearRetrievedScriptHashes(Wallet wallet) {
         wallet.getNode(KeyPurpose.RECEIVE).getChildren().stream().map(ElectrumServer::getScriptHash).forEach(ElectrumServer::clearRetrievedScriptHash);
         wallet.getNode(KeyPurpose.CHANGE).getChildren().stream().map(ElectrumServer::getScriptHash).forEach(ElectrumServer::clearRetrievedScriptHash);
-        TransactionHistoryService.walletLocks.computeIfAbsent(wallet.hashCode(), w -> new WalletLock()).initialized = false;
+        WalletSyncLock walletSyncLock = walletSyncLocks.computeIfAbsent(wallet.hashCode(), w -> new WalletSyncLock());
+        walletSyncLock.scriptHashesInitialized = false;
+        walletSyncLock.storedProofsChecked = false;
+        walletSyncLock.storedProofsFromHeight = null;
     }
 
     private static void clearRetrievedScriptHash(String scriptHash) {
         retrievedScriptHashes.remove(scriptHash);
         sameHeightTxioScriptHashes.remove(scriptHash);
+    }
+
+    /**
+     * Invalidates the cached status of every node holding a transaction output, or a spend of one, above the given fork point, so that the reorganised
+     * history is fetched again. A transaction re-included at the same height leaves the server reporting an unchanged status, and without this the
+     * node would never be revisited. This touches cache state only, never wallet data.
+     * <p>
+     * Returns whether any node was invalidated, which is false for a wallet holding nothing above the fork: it can have proven nothing against a
+     * header that was discarded, so there is nothing for it to fetch again.
+     */
+    public static boolean invalidateScriptHashesForReorg(Wallet wallet, int forkHeight) {
+        boolean invalidated = invalidateWalletScriptHashesForReorg(wallet, forkHeight);
+        for(Wallet childWallet : new ArrayList<>(wallet.getChildWallets())) {
+            if(childWallet.isNested()) {
+                invalidated |= invalidateWalletScriptHashesForReorg(childWallet, forkHeight);
+            }
+        }
+
+        return invalidated;
+    }
+
+    private static boolean invalidateWalletScriptHashesForReorg(Wallet wallet, int forkHeight) {
+        boolean invalidated = false;
+        for(Map.Entry<WalletNode, Set<BlockTransactionHashIndex>> entry : wallet.getWalletNodes().entrySet()) {
+            if(entry.getValue().stream().anyMatch(txo -> txo.getHeight() > forkHeight || (txo.getSpentBy() != null && txo.getSpentBy().getHeight() > forkHeight))) {
+                String scriptHash = getScriptHash(entry.getKey());
+                clearRetrievedScriptHash(scriptHash);
+                reorgInvalidatedScriptHashes.add(scriptHash);
+                invalidated = true;
+            }
+        }
+
+        return invalidated;
+    }
+
+    /**
+     * Returns whether any node of the given wallet, or of a nested child wallet, is still holding the exemption a reorg invalidation gave it. Only a
+     * fetch of every node revisits those nodes and clears the exemption, so a refresh that would otherwise fetch a subset must be widened to one.
+     */
+    private static boolean hasReorgInvalidatedScriptHashes(Wallet wallet) {
+        if(reorgInvalidatedScriptHashes.isEmpty()) {
+            return false;
+        }
+
+        List<Wallet> wallets = new ArrayList<>();
+        wallets.add(wallet);
+        for(Wallet childWallet : new ArrayList<>(wallet.getChildWallets())) {
+            if(childWallet.isNested()) {
+                wallets.add(childWallet);
+            }
+        }
+
+        return wallets.stream().flatMap(w -> w.getWalletNodes().keySet().stream()).map(ElectrumServer::getScriptHash).anyMatch(reorgInvalidatedScriptHashes::contains);
+    }
+
+    public boolean fetchAndCalculateHistory(Wallet mainWallet, List<Wallet> filterToWallets, Set<WalletNode> filterToNodes) throws ServerException {
+        boolean historyFetched = fetchAndCalculateWalletHistory(mainWallet, filterToWallets, filterToNodes);
+        for(Wallet childWallet : new ArrayList<>(mainWallet.getChildWallets())) {
+            if(childWallet.isNested()) {
+                historyFetched |= fetchAndCalculateWalletHistory(childWallet, filterToWallets, filterToNodes);
+            }
+        }
+
+        return historyFetched;
+    }
+
+    private boolean fetchAndCalculateWalletHistory(Wallet wallet, List<Wallet> filterToWallets, Set<WalletNode> filterToNodes) throws ServerException {
+        if(filterToWallets != null && !filterToWallets.contains(wallet)) {
+            return false;
+        }
+
+        Set<WalletNode> nodes = (filterToNodes == null ? null : filterToNodes.stream().filter(node -> node.getWallet().equals(wallet)).collect(Collectors.toSet()));
+        if(filterToNodes != null && nodes.isEmpty()) {
+            return false;
+        }
+
+        if(wallet.getScriptType() == ScriptType.MWEB) {
+            return true;
+        }
+
+        WalletSyncLock walletSyncLock = walletSyncLocks.computeIfAbsent(wallet.hashCode(), w -> new WalletSyncLock());
+        synchronized(walletSyncLock) {
+            if(!walletSyncLock.scriptHashesInitialized) {
+                addCalculatedScriptHashes(wallet);
+                walletSyncLock.scriptHashesInitialized = true;
+            }
+
+            if(isConnected()) {
+                try {
+                    if(!walletSyncLock.storedProofsChecked && isVerifyingTransactions()) {
+                        walletSyncLock.storedProofsChecked = checkStoredProofs(wallet, walletSyncLock);
+                        //Only a fetch of every node revisits what the comparison invalidated, and it is not made again once it has completed
+                        if(nodes != null && hasReorgInvalidatedScriptHashes(wallet)) {
+                            nodes = null;
+                        }
+                    }
+
+                    //Taken before the fetch, so an invalidation arriving while this pass runs can be told from one the pass is acting on
+                    Set<String> invalidatedBeforeFetch = Set.copyOf(reorgInvalidatedScriptHashes);
+                    int reorgsBeforeFetch = reorgCount;
+                    Map<String, String> previousScriptHashes = getCalculatedScriptHashes(wallet);
+                    Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap = (nodes == null ? getHistory(wallet) : getHistory(wallet, nodes));
+                    getReferencedTransactions(wallet, nodeTransactionMap);
+                    calculateNodeHistory(wallet, nodeTransactionMap);
+
+                    //A reorg reconciled while this pass was in flight was invalidated against the outputs the wallet held at the time, which do not include
+                    //a payment this pass has just found above the fork. The wallet may have had nothing above it then, and so not have refreshed at all
+                    if(reorgCount != reorgsBeforeFetch && invalidateWalletScriptHashesForReorg(wallet, lastReorgForkHeight)) {
+                        EventManager.get().post(new RequestWalletRefreshEvent(wallet));
+                    }
+
+                    //A node invalidated by a reorg has no retrieved status left to compare against, so it must not count as changed history below
+                    Set<String> invalidatedScriptHashes = Set.copyOf(reorgInvalidatedScriptHashes);
+
+                    //Add all of the script hashes we have now fetched the history for so we don't need to fetch again until the script hash status changes
+                    Set<WalletNode> updatedNodes = new HashSet<>();
+                    Map<WalletNode, Set<BlockTransactionHashIndex>> walletNodes = wallet.getWalletNodes();
+                    for(WalletNode node : (nodes == null ? walletNodes.keySet() : nodes)) {
+                        String scriptHash = getScriptHash(node);
+                        String subscribedStatus = getSubscribedScriptHashStatus(scriptHash);
+                        if(!Objects.equals(subscribedStatus, retrievedScriptHashes.get(scriptHash))) {
+                            updatedNodes.add(node);
+                        }
+
+                        //A reorg detected while this pass was in flight - which is what happens when a history thread is the one to reconcile -
+                        //invalidated data the pass had already fetched, so its status stays cleared for the refresh the reorg triggers. Restoring it
+                        //would leave the node looking up to date while it still holds what the orphaned block proved, and nothing would fetch it again
+                        if(invalidatedBeforeFetch.contains(scriptHash) || !invalidatedScriptHashes.contains(scriptHash)) {
+                            retrievedScriptHashes.put(scriptHash, subscribedStatus);
+                        }
+                    }
+
+                    //If wallet was not empty, check if all used updated nodes have changed history
+                    if(nodes == null && previousScriptHashes.values().stream().anyMatch(Objects::nonNull)) {
+                        Set<WalletNode> changedNodes = updatedNodes.stream().filter(node -> {
+                            String scriptHash = getScriptHash(node);
+                            //A demoted node disagrees with the server because this pass demoted it, which is not the wallet having a different history
+                            return !invalidatedScriptHashes.contains(scriptHash) && !demotedScriptHashes.contains(scriptHash);
+                        }).collect(Collectors.toSet());
+                        if(!changedNodes.isEmpty()
+                                && changedNodes.equals(walletNodes.entrySet().stream().filter(entry -> !entry.getValue().isEmpty()).map(Map.Entry::getKey).collect(Collectors.toSet()))
+                                && !sameHeightTxioScriptHashes.containsAll(changedNodes.stream().map(ElectrumServer::getScriptHash).collect(Collectors.toSet()))) {
+                            //All used nodes on a non-empty wallet have changed history. Abort and trigger a full refresh.
+                            log.info("All used nodes on a non-empty wallet have changed history. Triggering a full wallet refresh.");
+                            throw new AllHistoryChangedException();
+                        }
+                    }
+
+                    //The exemption lasts for exactly one full fetch, and is cleared only once the check above has passed. Only what was invalidated
+                    //before this pass fetched anything is cleared: the rest is for the refresh the reorg triggers, which has not run yet
+                    if(nodes == null && !invalidatedBeforeFetch.isEmpty()) {
+                        Set<String> walletScriptHashes = walletNodes.keySet().stream().map(ElectrumServer::getScriptHash).collect(Collectors.toSet());
+                        reorgInvalidatedScriptHashes.removeAll(invalidatedBeforeFetch.stream().filter(walletScriptHashes::contains).collect(Collectors.toSet()));
+                    }
+
+                    //Clear transaction outputs for nodes that have no history - this is useful when a transaction is replaced in the mempool. A node a reorg
+                    //invalidated during this pass has no status because it was invalidated, not because it has no history, and is left for the refresh
+                    if(nodes != null) {
+                        for(WalletNode node : nodes) {
+                            String scriptHash = getScriptHash(node);
+                            if(retrievedScriptHashes.get(scriptHash) == null && !node.getTransactionOutputs().isEmpty()
+                                    && (invalidatedBeforeFetch.contains(scriptHash) || !invalidatedScriptHashes.contains(scriptHash))) {
+                                log.debug("Clearing transaction history for " + node);
+                                node.getTransactionOutputs().clear();
+                            }
+                        }
+                    }
+
+                    return true;
+                } finally {
+                    //A finding is demoted, and may already have been written, before a later call in the pass can fail: it must be shown either way
+                    postProofEvents(wallet);
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /**
+     * Compares the block each of the wallet's transactions was proven against with the header the store now holds at that height, once for a wallet
+     * as it is first fetched. A reorg reaches the wallets open when the store is rewound, and a wallet closed at the time - whether earlier this
+     * session or in one before it - still holds what the replaced block proved, at heights the server may well report unchanged. Where one is found,
+     * the wallet is treated as a reorg at that height would have treated it: its nodes above are fetched again and the stored block hashes compared.
+     * <p>
+     * Only the transactions within the deepest reorg the store accepts of the block height the wallet stored are compared, which keeps an ordinary
+     * load from reading the store at all. That is every transaction a reorg could have reached where the store kept pace with the wallet, since the
+     * wallet heard of every reorg while it was open. It is not where the wallet's height advanced while nothing was being verified - on a Bitcoin
+     * Core connection, or with verification off - and the store stood still: a reorg reconciled later, below that window, is not looked for.
+     * <p>
+     * Returns whether every one of them could be compared, which is false while the store has yet to reach one. The comparison is then made again on
+     * a later fetch, from the height it was first made from: the fetch in between moves the wallet's stored height on to the current tip.
+     */
+    private static boolean checkStoredProofs(Wallet wallet, WalletSyncLock walletSyncLock) throws ServerException {
+        if(walletSyncLock.storedProofsFromHeight == null) {
+            int startHeight = Network.get().getHeaderCheckpoints().getMaxHeight() + 1;
+            Integer storedHeight = wallet.getStoredBlockHeight();
+            walletSyncLock.storedProofsFromHeight = storedHeight == null ? startHeight : Math.max(startHeight, storedHeight - MAX_REORG_DEPTH + 1);
+        }
+
+        int fromHeight = walletSyncLock.storedProofsFromHeight;
+        List<BlockTransaction> proven = wallet.getTransactions().values().stream().filter(blkTx -> blkTx.getBlockHash() != null && blkTx.getHeight() >= fromHeight).toList();
+        if(proven.isEmpty()) {
+            return true;    //the ordinary case, in which the store is not read, nor loaded for a wallet that has no use for it
+        }
+
+        try {
+            //Read without the header sync lock, which a catch up holds across its fetches. A header the sync is about to replace compares as held,
+            //and the reorg that replaces it then reaches this wallet as it does any other that is open
+            HeaderStore store = getHeaderStore();
+            int orphanedHeight = Integer.MAX_VALUE;
+            boolean compared = true;
+            for(BlockTransaction blkTx : proven) {
+                Sha256Hash storedHash = store.getHash(blkTx.getHeight());
+                if(storedHash == null) {
+                    compared = false;
+                } else if(!storedHash.equals(blkTx.getBlockHash())) {
+                    orphanedHeight = Math.min(orphanedHeight, blkTx.getHeight());
+                }
+            }
+
+            if(orphanedHeight < Integer.MAX_VALUE) {
+                int forkHeight = orphanedHeight - 1;
+                synchronized(headerSyncLock) {
+                    lastReorgForkHeight = Math.min(lastReorgForkHeight, forkHeight);
+                }
+                invalidateWalletScriptHashesForReorg(wallet, forkHeight);
+            }
+
+            return compared;
+        } catch(IOException e) {
+            throw new ServerException("Could not read the block header store", e);
+        }
     }
 
     public Map<WalletNode, Set<BlockTransactionHash>> getHistory(Wallet wallet) throws ServerException {
@@ -338,6 +701,10 @@ public class ElectrumServer {
             Map<String, WalletNode> walletScriptHashes = getAllScriptHashes(wallet);
             for(BlockTransactionHash reference : newReferences) {
                 BlockTransaction blockTransaction = wallet.getTransactions().get(reference.getHash());
+                if(blockTransaction == null) {
+                    continue;
+                }
+
                 for(TransactionOutput txOutput : blockTransaction.getTransaction().getOutputs()) {
                     WalletNode node = walletScriptHashes.get(getScriptHash(txOutput));
                     if(node != null && !historyNodes.contains(node)) {
@@ -434,23 +801,44 @@ public class ElectrumServer {
             }
 
             //Optimistic optimizations from guessing the script hash status based on known information
+            Map<Sha256Hash, BlockTransaction> candidateTxs = new LinkedHashMap<>(broadcastedTransactions);
+            wallet.getTransactions().forEach((txid, blkTx) -> {
+                if(blkTx.getHeight() <= 0) {
+                    candidateTxs.putIfAbsent(txid, blkTx);
+                }
+            });
+
+            //Precompute the predicted height per candidate by inspecting in-wallet parents
+            Map<Sha256Hash, Integer> candidateHeights = new HashMap<>(candidateTxs.size());
+            for(Map.Entry<Sha256Hash, BlockTransaction> e : candidateTxs.entrySet()) {
+                int predicted = 0;
+                for(TransactionInput input : e.getValue().getTransaction().getInputs()) {
+                    BlockTransaction parent = wallet.getWalletTransaction(input.getOutpoint().getHash());
+                    if(parent != null && parent.getHeight() <= 0) {
+                        predicted = -1;
+                        break;
+                    }
+                }
+                candidateHeights.put(e.getKey(), predicted);
+            }
+
             for(Map.Entry<WalletNode, ScriptHashTx[]> entry : nodeHashHistory.entrySet()) {
                 WalletNode node = entry.getKey();
                 String scriptHash = pathScriptHashes.get(node.getDerivationPath());
-                List<String> statuses = subscribedScriptHashes.get(scriptHash);
+                String subscribedStatus = getSubscribedScriptHashStatus(scriptHash);
 
-                if(statuses != null && !statuses.isEmpty()) {
-                    //Optimize for new transactions that have been recently broadcasted
-                    for(Sha256Hash txid : broadcastedTransactions.keySet()) {
-                        BlockTransaction blkTx = broadcastedTransactions.get(txid);
+                if(subscribedStatus != null) {
+                    //Optimize for txs that are already known (broadcasted or mempool-persisted)
+                    for(Sha256Hash txid : candidateTxs.keySet()) {
+                        BlockTransaction blkTx = candidateTxs.get(txid);
                         if(blkTx.getTransaction().getOutputs().stream().map(ElectrumServer::getScriptHash).anyMatch(scriptHash::equals) ||
                             blkTx.getTransaction().getInputs().stream().map(txInput -> getPrevOutput(wallet, txInput))
                                     .filter(Objects::nonNull).map(ElectrumServer::getScriptHash).anyMatch(scriptHash::equals)) {
                             List<ScriptHashTx> scriptHashTxes = new ArrayList<>(getScriptHashes(scriptHash, node));
-                            scriptHashTxes.add(new ScriptHashTx(0, txid.toString(), blkTx.getFee() == null ? 0 : blkTx.getFee()));
+                            scriptHashTxes.add(new ScriptHashTx(candidateHeights.get(txid), txid.toString(), blkTx.getFee()));
 
                             String status = getScriptHashStatus(scriptHashTxes);
-                            if(Objects.equals(status, statuses.getLast())) {
+                            if(Objects.equals(status, subscribedStatus)) {
                                 entry.setValue(scriptHashTxes.toArray(new ScriptHashTx[0]));
                                 pathScriptHashes.remove(node.getDerivationPath());
                             }
@@ -465,12 +853,12 @@ public class ElectrumServer {
                         for(ScriptHashTx scriptHashTx : scriptHashTxes) {
                             if(scriptHashTx.height <= 0) {
                                 scriptHashTx.height = AppServices.getCurrentBlockHeight();
-                                scriptHashTx.fee = 0;
+                                scriptHashTx.fee = null;
                             }
                         }
 
                         String status = getScriptHashStatus(scriptHashTxes);
-                        if(Objects.equals(status, statuses.getLast())) {
+                        if(Objects.equals(status, subscribedStatus)) {
                             entry.setValue(scriptHashTxes.toArray(new ScriptHashTx[0]));
                             pathScriptHashes.remove(node.getDerivationPath());
                         }
@@ -576,8 +964,10 @@ public class ElectrumServer {
                 if(node != null) {
                     String scriptHash = getScriptHash(node);
 
-                    //Check if there is history for this script hash, and if the history has changed since last fetched
-                    if(status != null && !status.equals(retrievedScriptHashes.get(scriptHash))) {
+                    //Check if there is history for this script hash, and if the history has changed since last fetched. The comparison against the
+                    //node's own calculated status is what the already subscribed branch makes: subscriptions drop on every connect while retrieved
+                    //statuses survive, so a node whose outputs disagree with the server would otherwise sit unfetched until its status changed
+                    if(status != null && (!status.equals(retrievedScriptHashes.get(scriptHash)) || !status.equals(getScriptHashStatus(scriptHash, node)))) {
                         //Set the value for this node to be an empty set to mark it as requiring a get_history RPC call for this wallet
                         nodeTransactionMap.put(node, new TreeSet<>());
                     }
@@ -639,6 +1029,10 @@ public class ElectrumServer {
     }
 
     public void getReferencedTransactions(Wallet wallet, Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap) throws ServerException {
+        //The write boundary for every caller: the references below reach the wallet transactions here and the node transaction outputs through
+        //calculateNodeHistory, which consumes this same map after the unproven heights in it have been demoted in place
+        Map<BlockTransactionHash, BlockHeader> proven = isVerifyingTransactions() ? verifyConfirmedReferences(wallet, nodeTransactionMap) : Collections.emptyMap();
+
         Map<BlockTransactionHash, Transaction> references = new TreeMap<>();
         for(Set<BlockTransactionHash> nodeReferences : nodeTransactionMap.values()) {
             for(BlockTransactionHash nodeReference : nodeReferences) {
@@ -651,7 +1045,11 @@ public class ElectrumServer {
             BlockTransactionHash reference = entry.getKey();
             BlockTransaction blockTransaction = wallet.getWalletTransaction(reference.getHash());
             if(blockTransaction != null) {
-                if(reference.getHeight() == blockTransaction.getHeight()) {
+                //A reference proven this pass is not removed even where its height is unchanged: the only way it was proven at an unchanged height is that
+                //its stored block was orphaned, so it must be rebuilt to carry the block it is now proven against. Its transaction comes from the wallet below,
+                //so nothing is fetched for it
+                if(reference.getHeight() == blockTransaction.getHeight() && (reference.getFee() == null || blockTransaction.getFee() != null)
+                        && !proven.containsKey(reference)) {
                     iter.remove();
                 } else {
                     entry.setValue(blockTransaction.getTransaction());
@@ -664,14 +1062,603 @@ public class ElectrumServer {
         Map<Sha256Hash, BlockTransaction> transactionMap = new HashMap<>();
         if(!references.isEmpty()) {
             Map<Integer, BlockHeader> blockHeaderMap = getBlockHeaders(wallet, references.keySet());
-            transactionMap = getTransactions(wallet, references, blockHeaderMap);
+            transactionMap = getTransactions(wallet, references, blockHeaderMap, proven);
         }
 
-        if(!transactionMap.equals(wallet.getTransactions())) {
+        if(isVerifyingSignatures()) {
+            Map<Sha256Hash, BlockTransaction> fetched = transactionMap;
+            Function<Sha256Hash, Transaction> inputTransactions = txid -> {
+                BlockTransaction blockTransaction = fetched.containsKey(txid) ? fetched.get(txid) : wallet.getWalletTransaction(txid);
+                return blockTransaction == null ? null : blockTransaction.getTransaction();
+            };
+
+            Map<Sha256Hash, Transaction> unconfirmed = new HashMap<>();
+            for(Set<BlockTransactionHash> nodeReferences : nodeTransactionMap.values()) {
+                for(BlockTransactionHash reference : nodeReferences) {
+                    Transaction transaction = reference.getHeight() <= 0 ? inputTransactions.apply(reference.getHash()) : null;
+                    if(transaction != null) {
+                        unconfirmed.put(reference.getHash(), transaction);
+                    }
+                }
+            }
+
+            Set<Sha256Hash> unsigned = getUnsignedTransactions(wallet, unconfirmed, inputTransactions);
+            if(!unsigned.isEmpty()) {
+                transactionMap.keySet().removeAll(unsigned);
+                removeReferences(nodeTransactionMap, unsigned);
+            }
+        }
+
+        //A re-proof at an unchanged height leaves the map equal to what the wallet holds, since a block hash is not part of that comparison
+        if(!transactionMap.equals(wallet.getTransactions()) || !proven.isEmpty()) {
             wallet.updateTransactions(transactionMap);
             broadcastedTransactions.keySet().removeAll(transactionMap.entrySet().stream().filter(entry -> entry.getValue().getHeight() > 0)
                     .map(Map.Entry::getKey).collect(Collectors.toSet()));
         }
+    }
+
+    /**
+     * Proves the confirmed references this pass introduces or changes, demoting in place those the server would not or could not prove, and returning
+     * the exact (transaction, height) pairs proven with the verified headers they were proven against.
+     * <p>
+     * Everything here is keyed by the pair rather than by the transaction: a server can report one transaction at two heights on two script hashes,
+     * and keyed by transaction alone the pair that did not prove would ride into the wallet on the back of the pair that did.
+     */
+    private Map<BlockTransactionHash, BlockHeader> verifyConfirmedReferences(Wallet wallet, Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap) throws ServerException {
+        Set<BlockTransactionHash> toProve = new LinkedHashSet<>();
+        Set<BlockTransactionHash> refusedNow = new HashSet<>();
+        for(Set<BlockTransactionHash> references : nodeTransactionMap.values()) {
+            for(BlockTransactionHash reference : references) {
+                if(reference.getHeight() > 0) {
+                    if(refusedThisPass.contains(reference)) {
+                        refusedNow.add(reference);      //already refused earlier in this pass, so demote it again without spending the retries again
+                    } else {
+                        BlockTransaction existing = wallet.getWalletTransaction(reference.getHash());
+                        if(existing == null || existing.getHeight() != reference.getHeight() || isProvenAgainstOrphanedHeader(existing)) {
+                            toProve.add(reference);
+                        }
+                    }
+                }
+            }
+        }
+
+        if(!refusedNow.isEmpty()) {
+            demoteReferences(nodeTransactionMap, refusedNow);
+        }
+
+        if(toProve.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Map<BlockTransactionHash, BlockHeader> proven;
+        try {
+            proven = verifyMerkleProofs(wallet, toProve);
+        } catch(UnsupportedMethodException e) {
+            disableVerification(e);
+            return Collections.emptyMap();      //nothing has been refused, so the history simply proceeds unverified
+        } catch(ProofsUnavailableException e) {
+            disableVerification(e);
+            return Collections.emptyMap();
+        }
+
+        Set<BlockTransactionHash> unproven = new LinkedHashSet<>(toProve);
+        unproven.removeAll(proven.keySet());
+        if(!unproven.isEmpty()) {
+            refusedThisPass.addAll(unproven);
+            //Exactly these pairs: a reference for the same transaction at another height is untouched and is judged on its own proof
+            demoteReferences(nodeTransactionMap, unproven);
+        }
+
+        return proven;
+    }
+
+    /**
+     * Proves the confirmed heights a silent payments batch introduces, demoting to unconfirmed in place those the connected server would not prove.
+     * These transactions are new to the wallet by construction, so unlike the history path there is nothing here already stored to compare against.
+     */
+    Map<BlockTransactionHash, BlockHeader> verifySilentPaymentReferences(Wallet wallet, Map<BlockTransactionHash, Transaction> referencesToFetch) throws ServerException {
+        Set<BlockTransactionHash> toProve = referencesToFetch.keySet().stream().filter(reference -> reference.getHeight() > 0)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if(toProve.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Map<BlockTransactionHash, BlockHeader> proven;
+        try {
+            proven = verifyMerkleProofs(wallet, toProve);
+        } catch(UnsupportedMethodException e) {
+            disableVerification(e);
+            return Collections.emptyMap();
+        } catch(ProofsUnavailableException e) {
+            disableVerification(e);
+            return Collections.emptyMap();
+        }
+
+        for(BlockTransactionHash reference : toProve) {
+            if(!proven.containsKey(reference)) {
+                Transaction transaction = referencesToFetch.remove(reference);
+                referencesToFetch.put(new BlockTransaction(reference.getHash(), 0, null, reference.getFee(), null), transaction);
+            }
+        }
+
+        return proven;
+    }
+
+    /**
+     * Handles the connected server never answering a request for proofs at all, rather than failing to prove a particular transaction. Where
+     * verification is mandatory the history fails and the public server rotates; elsewhere the session proceeds unverified, since denying a wallet its
+     * history is worse than not verifying it against a server its owner chose. A lost connection arrives as the same exception and is not this, so the
+     * transport is asked: with the connection gone it is the ordinary reconnect's business.
+     */
+    private static void disableVerification(ProofsUnavailableException e) throws ServerException {
+        if(isVerificationMandatory() || !isConnected()) {
+            throw e;
+        }
+
+        log.warn("Server could not supply transaction proofs, disabling transaction verification for this session: " + e.getMessage());
+        serverCapability.withMerkleProofs(false);
+    }
+
+    /**
+     * Handles a server that turns out not to implement a call verification needs, on the same terms: the state the capability mapping would have
+     * produced had it known.
+     */
+    private static void disableVerification(UnsupportedMethodException e) throws ServerException {
+        if(isVerificationMandatory()) {
+            throw new ServerException("Server does not support transaction verification (" + e.getMethod() + ")", e);
+        }
+
+        log.warn("Server does not support " + e.getMethod() + ", disabling transaction verification for this session");
+        serverCapability.withMerkleProofs(false);
+    }
+
+    /**
+     * Replaces each of the given references with an unconfirmed one in every node that holds it, which is how an unproven height is kept out of the
+     * wallet: it flows on through both sinks as an ordinary mempool transaction rather than through a path of its own.
+     */
+    private void demoteReferences(Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap, Set<BlockTransactionHash> unproven) {
+        for(Map.Entry<WalletNode, Set<BlockTransactionHash>> entry : nodeTransactionMap.entrySet()) {
+            Set<BlockTransactionHash> references = entry.getValue();
+            if(!references.isEmpty()) {
+                for(BlockTransactionHash reference : unproven) {
+                    if(references.remove(reference)) {
+                        references.add(new BlockTransaction(reference.getHash(), 0, null, reference.getFee(), null));
+                        //Recorded for the changed history check in fetchAndCalculateWalletHistory, which this node would otherwise trip
+                        demotedScriptHashes.add(getScriptHash(entry.getKey()));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Removes every reference to the given transactions from every node that holds one, so that they reach neither the wallet transactions nor the node
+     * transaction outputs. The nodes are recorded as demoted ones are, since they too disagree with the server's status by construction.
+     */
+    private void removeReferences(Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap, Set<Sha256Hash> txids) {
+        for(Map.Entry<WalletNode, Set<BlockTransactionHash>> entry : nodeTransactionMap.entrySet()) {
+            if(entry.getValue().removeIf(reference -> txids.contains(reference.getHash()))) {
+                demotedScriptHashes.add(getScriptHash(entry.getKey()));
+            }
+        }
+    }
+
+    private static boolean isVerifyingSignatures() {
+        //A Bitcoin Core connection is the user's own node, which has validated every transaction it reports
+        return Config.get().getServerType() != ServerType.BITCOIN_CORE;
+    }
+
+    /**
+     * The given unconfirmed transactions that spend this wallet's outputs without valid signatures from it, together with those spending what they
+     * create. Until it is mined a transaction is only what the server reports, and where it spends from this wallet that report can be checked here.
+     * A taproot signature commits to every output its transaction spends, so those of a spend from a taproot wallet not already known are fetched.
+     * Everything judged unsigned this pass is returned again by each later call.
+     */
+    Set<Sha256Hash> getUnsignedTransactions(Wallet wallet, Map<Sha256Hash, Transaction> unconfirmed, Function<Sha256Hash, Transaction> inputTransactions) throws ServerException {
+        Set<Sha256Hash> unsigned = unsignedThisPass.computeIfAbsent(wallet, w -> new LinkedHashSet<>());
+        Set<Sha256Hash> found = new LinkedHashSet<>();
+
+        Map<Sha256Hash, Transaction> unjudged = new LinkedHashMap<>(unconfirmed);
+        unjudged.keySet().removeAll(unsigned);
+        if(!unjudged.isEmpty()) {
+            //Built once per call rather than per transaction, since it visits every address node, and not kept across calls, since the gap limit adds
+            //nodes during a pass and a spend from one missing here would not be checked at all
+            Map<Script, WalletNode> walletOutputScripts = wallet.getWalletOutputScripts();
+            fetchSpentTransactions(wallet, unjudged.values(), inputTransactions, walletOutputScripts);
+            Function<Sha256Hash, Transaction> lookup = txid -> {
+                Transaction transaction = inputTransactions.apply(txid);
+                return transaction == null ? spentTransactionsThisPass.get(txid) : transaction;
+            };
+
+            for(Map.Entry<Sha256Hash, Transaction> entry : unjudged.entrySet()) {
+                try {
+                    if(!wallet.getUnsignedInputs(entry.getValue(), lookup, walletOutputScripts).isEmpty()) {
+                        found.add(entry.getKey());
+                    }
+                } catch(Exception e) {
+                    log.warn("Could not verify the signatures of " + entry.getKey(), e);
+                    found.add(entry.getKey());
+                }
+            }
+        }
+
+        for(boolean added = !found.isEmpty() || !unsigned.isEmpty(); added; ) {
+            added = false;
+            for(Map.Entry<Sha256Hash, Transaction> entry : unconfirmed.entrySet()) {
+                Sha256Hash txid = entry.getKey();
+                if(!found.contains(txid) && !unsigned.contains(txid) && entry.getValue().getInputs().stream().map(input -> input.getOutpoint().getHash())
+                        .anyMatch(spent -> found.contains(spent) || unsigned.contains(spent))) {
+                    found.add(entry.getKey());
+                    added = true;
+                }
+            }
+        }
+
+        if(!found.isEmpty()) {
+            unsigned.addAll(found);
+            log.warn("The connected server reported transactions spending from " + wallet.getFullName() + " that are not validly signed: " + found);
+            Set<Sha256Hash> unwarned = found.stream().filter(unsignedWarnedTxids::add).collect(Collectors.toCollection(LinkedHashSet::new));
+            if(!unwarned.isEmpty()) {
+                EventManager.get().post(new UnsignedTransactionsEvent(wallet, unwarned));
+            }
+        }
+
+        return new LinkedHashSet<>(unsigned);
+    }
+
+    private void fetchSpentTransactions(Wallet wallet, Collection<Transaction> transactions, Function<Sha256Hash, Transaction> inputTransactions,
+                                        Map<Script, WalletNode> walletOutputScripts) throws ServerException {
+        Set<String> txids = new LinkedHashSet<>();
+        for(Transaction transaction : transactions) {
+            Map<TransactionInput, WalletNode> signingNodes = wallet.getSigningNodes(transaction, inputTransactions, walletOutputScripts);
+            if(signingNodes.values().stream().anyMatch(node -> node.getWallet().getScriptType() == ScriptType.P2TR)) {
+                transaction.getInputs().stream().map(input -> input.getOutpoint().getHash())
+                        .filter(txid -> !spentTransactionsThisPass.containsKey(txid) && inputTransactions.apply(txid) == null).forEach(txid -> txids.add(txid.toString()));
+            }
+        }
+
+        if(txids.isEmpty()) {
+            return;
+        }
+
+        try {
+            Map<String, String> result = electrumServerRpc.getTransactions(getTransport(), wallet, txids);
+            for(Map.Entry<String, String> entry : result.entrySet()) {
+                try {
+                    Transaction transaction = new Transaction(Utils.hexToBytes(entry.getValue()));
+                    if(transaction.getTxId().toString().equals(entry.getKey())) {
+                        spentTransactionsThisPass.put(transaction.getTxId(), transaction);
+                    }
+                } catch(Exception e) {
+                    log.debug("Could not parse spent transaction " + entry.getKey(), e);
+                }
+            }
+        } catch(ElectrumServerRpcException e) {
+            throw new ServerException(e.getMessage(), e.getCause());
+        }
+    }
+
+    /**
+     * Whether a stored transaction is held at a height that is still numerically what the server reports but was proven against a block the chain no
+     * longer holds, which is the form a reorg takes when a transaction is re-included at the same height. Above the last fork point this session only,
+     * so an ordinary pass reads neither the store nor the disk.
+     */
+    private static boolean isProvenAgainstOrphanedHeader(BlockTransaction existing) throws ServerException {
+        if(existing.getBlockHash() == null || existing.getHeight() <= lastReorgForkHeight) {
+            return false;       //history from before this feature, or a height no reorg this session has reached
+        }
+
+        try {
+            BlockHeader stored = getHeaderStore().getHeader(existing.getHeight());
+            return stored != null && !stored.getHash().equals(existing.getBlockHash());
+        } catch(IOException e) {
+            throw new ServerException("Could not read the block header store", e);
+        }
+    }
+
+    /**
+     * Verifies an inclusion proof for each given (transaction, height) pair, returning those proven with the header they were proven against. What is
+     * missing was refused or shown false, told apart by what the server did rather than said: one unable to keep up fails whole batches and recovers
+     * within the retries, while one that cannot substantiate a pair leaves it unanswered while its siblings succeed.
+     */
+    private Map<BlockTransactionHash, BlockHeader> verifyMerkleProofs(Wallet wallet, Set<BlockTransactionHash> toProve) throws ServerException {
+        Map<String, BlockTransactionHash> outstanding = new LinkedHashMap<>();
+        toProve.forEach(reference -> outstanding.put(reference.getHashAsString() + ":" + reference.getHeight(), reference));
+        Map<BlockTransactionHash, BlockHeader> proven = new HashMap<>();
+        //Accumulated here and merged out only on return. What is classified below is demoted by the caller on that return and on no other exit, so
+        //writing it as we go would let an exception mid-loop report a finding without the demotion it describes - telling the user a transaction is
+        //shown as unconfirmed while it is written confirmed
+        Set<BlockTransactionHash> failedProofs = new LinkedHashSet<>();
+        Set<BlockTransactionHash> refusedProofs = new LinkedHashSet<>();
+        prefetchVerifiedHeaders(toProve.stream().map(BlockTransactionHash::getHeight).toList());
+
+        ElectrumServerRpcException batchFailure = null;
+        boolean answered = false;
+        for(int attempt = 0; attempt < proofAttempts && !outstanding.isEmpty(); attempt++) {
+            if(attempt > 0) {
+                try {
+                    //Jittered, so that many clients refused by one overloaded server do not retry in step
+                    TimeUnit.MILLISECONDS.sleep(proofRetryDelayMillis + new Random().nextInt((int)proofRetryDelayMillis + 1));
+                } catch(InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new ServerException("Interrupted while verifying transactions", e);     //the task was cancelled, so fail it rather than report refusals
+                }
+            }
+
+            Map<String, TransactionMerkleProof> proofs;
+            try {
+                proofs = electrumServerRpc.getTransactionMerkleProofs(getTransport(), wallet, outstanding.values());
+                batchFailure = null;
+                answered = true;
+            } catch(UnsupportedMethodException e) {
+                throw e;    //before the catch below: whether the server implements the call is settled, and no retry will change it
+            } catch(ElectrumServerRpcException e) {
+                //The whole call failing says nothing about any one transaction, and a server momentarily unable to answer looks exactly like one
+                //that never will until the retries have been spent. Left to the loop, which is what tells the two apart
+                batchFailure = e;
+                continue;
+            }
+
+            for(Map.Entry<String, TransactionMerkleProof> entry : proofs.entrySet()) {
+                BlockTransactionHash reference = outstanding.get(entry.getKey());
+                TransactionMerkleProof proof = entry.getValue();
+                //An error, or a proof for some other block, leaves the pair outstanding: the server has not substantiated the height it reported
+                if(reference != null && proof != TransactionMerkleProof.ERROR_PROOF && proof.block_height == reference.getHeight()) {
+                    outstanding.remove(entry.getKey());
+                    BlockHeader header = getVerifiedHeader(reference.getHeight());
+                    if(header == null) {
+                        refusedProofs.add(reference);       //the height itself cannot be substantiated
+                    } else if(verifyProof(reference.getHash(), proof, header)) {
+                        proven.put(reference, header);
+                    } else {
+                        failedProofs.add(reference);        //the branch does not reconstruct against a verified header
+                    }
+                }
+            }
+        }
+
+        if(batchFailure != null) {
+            //Every attempt failed as a whole rather than per transaction, so nothing here has been refused. Never answered at all is a server unable
+            //to serve the call, which the callers may work around; answered and then not is one that can, so it fails the pass like any other
+            if(answered) {
+                throw new ServerException(batchFailure.getMessage(), batchFailure.getCause());
+            }
+
+            throw new ProofsUnavailableException(batchFailure.getMessage(), batchFailure.getCause());
+        }
+
+        //Reported at this height, then not substantiated at it through every attempt
+        refusedProofs.addAll(outstanding.values());
+
+        if(!failedProofs.isEmpty()) {
+            failed.computeIfAbsent(wallet, w -> new LinkedHashSet<>()).addAll(failedProofs);
+        }
+        if(!refusedProofs.isEmpty()) {
+            refused.computeIfAbsent(wallet, w -> new LinkedHashSet<>()).addAll(refusedProofs);
+        }
+
+        return proven;
+    }
+
+    /**
+     * The header the given transaction is proven to be included in at the given height, or null where the connected server did not substantiate it,
+     * whether by declining the proof, answering for another block, or supplying a branch that does not reconstruct. For a transaction reached outside
+     * a wallet, where there is no history to demote: the caller has only the header to show, or its absence.
+     * <p>
+     * What the server would not substantiate is raised with the user on the terms a wallet's is, a server refusing to stand behind a height it
+     * reported saying the same thing whether or not a wallet happens to hold the transaction. A server that does not implement the call at all has
+     * refused nothing, and disables verification for the session here as it does on the wallet paths.
+     */
+    public BlockHeader getProvenHeader(Sha256Hash txid, int height) throws ServerException {
+        String pair = txid + ":" + height;
+        BlockHeader provenHeader = provenTransactionHeaders.get(pair);
+        if(provenHeader != null) {
+            return provenHeader;    //a transaction reopened, or open in a second tab, and the answer cannot have changed while the block stands
+        }
+
+        BlockTransactionHash reference = new BlockTransaction(txid, height, null, null, null);
+        int reorgsBefore = reorgCount;
+        BlockHeader header;
+        try {
+            //The wallet paths' own verification, so that the retries telling a server momentarily unable to answer from one that cannot substantiate
+            //the height are spent here too: without them a single refused call would report an overloaded server as contradicting itself
+            header = verifyMerkleProofs(null, Set.of(reference)).get(reference);
+        } catch(UnsupportedMethodException e) {
+            //Before the catch below, as elsewhere: a property of the server rather than of this transaction, so it is settled for the session on the
+            //same terms the wallet paths settle it, and raised rather than recorded where verification is mandatory
+            disableVerification(e);
+            return null;
+        } catch(ProofsUnavailableException e) {
+            disableVerification(e);     //never answered at all, which is the server unable to serve the call rather than unwilling to prove this
+            return null;
+        } finally {
+            postProofEvents(null);
+        }
+
+        if(header == null) {
+            return null;    //only what was proven is cached: a server that will not prove it now is not the server that will be asked next
+        }
+
+        //Remembered only where no reorg intervened, under the lock reconcile holds while it clears: a proof resolving across one would otherwise
+        //be written behind that clear, leaving an entry proven against a header the chain no longer holds. The proof itself still stands or falls
+        //on the header it reconstructed, so it is returned either way
+        synchronized(headerSyncLock) {
+            if(reorgCount == reorgsBefore) {
+                provenTransactionHeaders.put(pair, header);
+            }
+        }
+
+        return header;
+    }
+
+    /**
+     * Whether a transaction carries the block it was proven to be in. The zero hash is not one: it marks a response that could not carry a height at
+     * all, and says nothing about a block.
+     */
+    public static boolean isProven(BlockTransaction blockTransaction) {
+        Sha256Hash blockHash = blockTransaction.getBlockHash();
+        return blockHash != null && !Sha256Hash.ZERO_HASH.equals(blockHash);
+    }
+
+    /**
+     * The given transaction carrying the block it was proven to be in, where this session has proved its height, and the transaction itself where it
+     * has not. The proof outlives the objects a wallet or a fetch hands out, none of which carry what was established after they were built, so what
+     * has been proven is asked here rather than read from whichever of them a form was last handed. For the same reason a block one of them carries
+     * that a reorg has since replaced is not taken as proven: the object may have been handed out before the reorg reached the wallet that holds it.
+     */
+    public static BlockTransaction getProvenTransaction(BlockTransaction blockTransaction) {
+        if(blockTransaction.getHeight() <= 0) {
+            return blockTransaction;
+        }
+
+        if(isProven(blockTransaction)) {
+            try {
+                if(!isProvenAgainstOrphanedHeader(blockTransaction)) {
+                    return blockTransaction;
+                }
+            } catch(ServerException e) {
+                log.warn("Could not compare the block of transaction " + blockTransaction.getHashAsString() + " with the header store", e);
+                return blockTransaction;
+            }
+
+            blockTransaction = new BlockTransaction(blockTransaction.getHash(), blockTransaction.getHeight(), null, blockTransaction.getFee(), blockTransaction.getTransaction(), null);
+        }
+
+        BlockHeader provenHeader = provenTransactionHeaders.get(blockTransaction.getHashAsString() + ":" + blockTransaction.getHeight());
+        if(provenHeader == null) {
+            return blockTransaction;
+        }
+
+        return getProvenTransaction(blockTransaction, provenHeader);
+    }
+
+    /**
+     * The given transaction carrying the given block, for a caller holding the header a proof was verified against. What was proven is shown from the
+     * proof itself rather than from the cache above, which is an optimisation and does not remember a proof obtained across a reorg.
+     */
+    public static BlockTransaction getProvenTransaction(BlockTransaction blockTransaction, BlockHeader provenHeader) {
+        return new BlockTransaction(blockTransaction.getHash(), blockTransaction.getHeight(), provenHeader.getTimeAsDate(),
+                blockTransaction.getFee(), blockTransaction.getTransaction(), provenHeader.getHash());
+    }
+
+    /**
+     * Whether the branch reconstructs the merkle root of the given verified header from the given transaction. Any malformed proof is a proof that
+     * does not verify rather than a broken session.
+     */
+    static boolean verifyProof(Sha256Hash txid, TransactionMerkleProof proof, BlockHeader header) {
+        if(proof.merkle == null || proof.merkle.size() > MerkleBranch.MAX_DEPTH) {
+            return false;
+        }
+
+        try {
+            MerkleBranch branch = new MerkleBranch(proof.pos, proof.merkle.stream().map(Sha256Hash::wrap).toList());
+            return branch.computeRoot(txid).equals(header.getMerkleRoot());
+        } catch(RuntimeException e) {
+            log.warn("Invalid merkle proof for " + txid + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Fetches and verifies, in batched pages, the header ranges below the last pin the given heights need, so getVerifiedHeader serves them from the
+     * session cache. The one header path worth batching: a range averages a difficulty period, and a restore can touch dozens while the user waits.
+     */
+    void prefetchVerifiedHeaders(Collection<Integer> heights) throws ServerException {
+        HeaderCheckpoints checkpoints = Network.get().getHeaderCheckpoints();
+        Set<Integer> subCheckpointHeights = new TreeSet<>();
+        for(int height : heights) {
+            if(height > 0 && height <= checkpoints.getMaxHeight() && !verifiedHistoricalHeaders.containsKey(height)) {
+                subCheckpointHeights.add(height);
+            }
+        }
+
+        if(subCheckpointHeights.isEmpty()) {
+            return;     //every height is above the last pin, and is served by the store the forward sync maintains
+        }
+
+        //Under the same lock as the forward sync and the single range fetch, so that two wallets restoring over the same periods fetch each once
+        synchronized(headerSyncLock) {
+            Map<Integer, Integer> ranges = new TreeMap<>();
+            for(int height : subCheckpointHeights) {
+                //A height already verified needs nothing, and one an added range covers is fetched by that range. Ranges reach up to the nearest
+                //verified header, so one usually covers a period - but not where part of it was verified already, hence asking rather than assuming
+                if(!verifiedHistoricalHeaders.containsKey(height) && ranges.entrySet().stream()
+                        .noneMatch(range -> range.getKey() <= height && height < range.getKey() + range.getValue())) {
+                    ranges.put(height, getVerifiedAnchorHeight(height, checkpoints.getPinnedHeightAtOrAbove(height)) - height + 1);
+                }
+            }
+
+            if(ranges.isEmpty()) {
+                return;
+            }
+
+            Map<Integer, BlockHeaders> chunks;
+            try {
+                chunks = electrumServerRpc.getBlockHeadersChunks(getTransport(), ranges);
+            } catch(UnsupportedMethodException e) {
+                throw e;
+            } catch(ElectrumServerRpcException e) {
+                throw new ServerException(e.getMessage(), e.getCause());
+            }
+
+            //A range the server errored on or answered malformed is absent, and one that fails linkage is not cached: either way getVerifiedHeader
+            //fetches it singly, and its heights resolve to refusals in the ordinary way if that fails too
+            for(Map.Entry<Integer, BlockHeaders> chunk : chunks.entrySet()) {
+                verifyAndCacheRange(chunk.getKey(), ranges.get(chunk.getKey()), chunk.getValue());
+            }
+        }
+    }
+
+    /**
+     * Raises one dialog for what this task could not prove, per wallet or, for a transaction reached outside any wallet, under a null one. Called from
+     * a finally so that a later failure in the pass cannot bury a finding whose demotion has already been written. Each pair is reported once per
+     * session, since the passes that follow a refusal re-attempt it.
+     */
+    void postProofEvents(Wallet wallet) {
+        postProofEvents(wallet, wallet);
+    }
+
+    void postProofEvents(Wallet wallet, Wallet reportWallet) {
+        //Logged before the warned set is consulted, so that the log records a finding on every pass it recurs even where its dialog has been shown
+        //once already. Without it a refusal that is filtered leaves no trace at all, and cannot be told from no proof having been asked for
+        Set<BlockTransactionHash> walletFailed = failed.remove(wallet);
+        if(walletFailed != null && !walletFailed.isEmpty()) {
+            log.warn("Inclusion proofs from the connected server did not reconstruct the block they were supplied for: " + describePairs(walletFailed));
+            Set<BlockTransactionHash> unwarnedFailed = filterWarned(walletFailed, true);
+            if(!unwarnedFailed.isEmpty()) {
+                EventManager.get().post(new TransactionProofsFailedEvent(reportWallet, unwarnedFailed));
+            }
+        }
+
+        Set<BlockTransactionHash> walletRefused = refused.remove(wallet);
+        if(walletRefused != null && !walletRefused.isEmpty()) {
+            log.warn("The connected server would not prove the heights it reported for: " + describePairs(walletRefused));
+            Set<BlockTransactionHash> unwarnedRefused = filterWarned(walletRefused, false);
+            if(!unwarnedRefused.isEmpty()) {
+                EventManager.get().post(new TransactionProofsRefusedEvent(reportWallet, unwarnedRefused));
+            }
+        }
+    }
+
+    private static String describePairs(Set<BlockTransactionHash> references) {
+        return references.stream().map(reference -> reference.getHashAsString() + ":" + reference.getHeight()).collect(Collectors.joining(", "));
+    }
+
+    /**
+     * The findings not yet shown to the user, recording what it returns as shown. A pair shown false is raised even where it was refused on an earlier
+     * pass, the two being different claims; a refusal of a pair already shown false is not, saying less than what has been said. Within one pass the
+     * order of the two posts above already gets this right.
+     */
+    private static Set<BlockTransactionHash> filterWarned(Set<BlockTransactionHash> references, boolean shownFalse) {
+        return references.stream().filter(reference -> {
+            String pair = reference.getHashAsString() + ":" + reference.getHeight();
+            if(shownFalse) {
+                proofWarnedPairs.add(pair);
+                return proofsShownFalseWarnedPairs.add(pair);
+            }
+
+            return proofWarnedPairs.add(pair);
+        }).collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     public Map<Integer, BlockHeader> getBlockHeaders(Wallet wallet, Set<BlockTransactionHash> references) throws ServerException {
@@ -680,11 +1667,22 @@ public class ElectrumServer {
             Set<Integer> blockHeights = new TreeSet<>();
             for(BlockTransactionHash reference : references) {
                 if(reference.getHeight() > 0) {
-                    if(retrievedBlockHeaders.containsKey(reference.getHeight())) {
-                        blockHeaderMap.put(reference.getHeight(), retrievedBlockHeaders.get(reference.getHeight()));
-                    } else {
-                        blockHeights.add(reference.getHeight());
-                    }
+                    blockHeights.add(reference.getHeight());
+                }
+            }
+
+            //Every height proven this pass already has its verified header in the store or the session cache, so serving timestamps from there is
+            //what leaves a confirmed wallet transaction emitting the same single call a recent transaction's confirmation does. Asked before
+            //retrievedBlockHeaders, and not copied into it: that cache holds every announced tip and is never rewound, so after a reorg it names
+            //the replaced block at any height that was one, while a header read from the store cannot be stale that way
+            putVerifiedHeaders(blockHeaderMap, blockHeights);
+
+            for(Iterator<Integer> iter = blockHeights.iterator(); iter.hasNext(); ) {
+                Integer blockHeight = iter.next();
+                BlockHeader retrievedHeader = retrievedBlockHeaders.get(blockHeight);
+                if(retrievedHeader != null) {
+                    blockHeaderMap.put(blockHeight, retrievedHeader);
+                    iter.remove();
                 }
             }
 
@@ -716,10 +1714,407 @@ public class ElectrumServer {
         }
     }
 
+    /**
+     * Serves what it can of the given heights from the store and from the session cache of headers linked to a pin, removing those it serves from the
+     * set of heights left to fetch. Nothing here fetches anything: a viewer looking up a date must not set a header range downloading, so the store is
+     * read only where it is already loaded and already covers the height, and a store that cannot be read is simply not used.
+     */
+    private static void putVerifiedHeaders(Map<Integer, BlockHeader> blockHeaderMap, Set<Integer> blockHeights) {
+        try {
+            HeaderStore store = headerStore;
+            HeaderStore readable = store != null && store.isIntact() ? store : null;
+            for(Iterator<Integer> iter = blockHeights.iterator(); iter.hasNext(); ) {
+                int height = iter.next();
+                BlockHeader header = verifiedHistoricalHeaders.get(height);
+                if(header == null && readable != null && height >= readable.getStartHeight() && height <= readable.getTipHeight()) {
+                    header = readable.getHeader(height);
+                }
+
+                if(header != null) {
+                    blockHeaderMap.put(height, header);
+                    iter.remove();
+                }
+            }
+        } catch(IOException e) {
+            log.warn("Could not read the block header store: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The header store for this network, loaded on first use from a background thread. It is not cleared when the server changes: headers are claims
+     * about the chain rather than about the server, and a new server announcing a different tip is handled as an ordinary reorg.
+     */
+    static HeaderStore getHeaderStore() throws ServerException {
+        try {
+            HeaderStore store = headerStore;
+            if(store != null && store.isIntact()) {
+                return store;
+            }
+
+            synchronized(headerStoreLock) {
+                //A loaded store outlives the connection, so its file may have been removed or truncated underneath it since it was read
+                if(headerStore == null || !headerStore.isIntact()) {
+                    headerStore = HeaderStore.load(Network.get().getHeaderCheckpoints());
+                }
+
+                return headerStore;
+            }
+        } catch(IOException e) {
+            throw new ServerException("Could not load the block header store", e);
+        }
+    }
+
+    /**
+     * Advances the store to the tip the server has announced, taken as one value so that a height and a header from either side of a new block cannot
+     * be mixed. Every chain problem - a linkage or difficulty failure, a short, empty or malformed chunk, or a reorg candidate that cannot
+     * be accepted - is thrown as a VerificationException, meaning this server cannot substantiate these heights; transport problems propagate as they
+     * are, meaning the session is broken.
+     */
+    void syncHeaders(ChainTip tip) throws ServerException {
+        synchronized(headerSyncLock) {
+            HeaderStore store = getHeaderStore();
+            try {
+                if(tip == null || tip.height() < store.getStartHeight()) {
+                    return;     //no tip yet, or a server that has not caught up to the last pinned header
+                }
+
+                if(tip.height() <= store.getTipHeight() && !tip.header().getHash().equals(store.getHash(tip.height()))) {
+                    reconcile(store, tip.height());     //the tie form of a divergence, which the loop below would never examine
+                }
+
+                syncTo(store, tip.height(), tip);
+            } catch(IOException e) {
+                throw new ServerException("Could not write to the block header store", e);
+            }
+        }
+    }
+
+    /**
+     * Advances the store to the given height on the calling thread, for a wallet history that has reached a height the sync service has not, under the
+     * exception contract of syncHeaders above. Both are internal to the header sync: it is getVerifiedHeader that turns what they throw into the
+     * refusal, failure and unsupported outcomes its callers act on.
+     */
+    void syncHeadersTo(int height) throws ServerException {
+        synchronized(headerSyncLock) {
+            HeaderStore store = getHeaderStore();
+            try {
+                syncTo(store, height, AppServices.getAnnouncedTip());
+            } catch(IOException e) {
+                throw new ServerException("Could not write to the block header store", e);
+            }
+        }
+    }
+
+    private void syncTo(HeaderStore store, int targetHeight, ChainTip tip) throws ServerException, IOException {
+        while(store.getTipHeight() < targetHeight) {
+            if(tip != null && tip.height() == store.getTipHeight() + 1 && tip.header().getPrevBlockHash().equals(store.getTipHash())) {
+                store.append(tip.header());     //the steady state: the announced header extends the store, so there is nothing to fetch
+                continue;
+            }
+
+            int startHeight = store.getTipHeight() + 1;
+            BlockHeaders chunk = electrumServerRpc.getBlockHeadersChunk(getTransport(), startHeight, HEADERS_CHUNK_SIZE);
+            if(chunk.count == 0) {
+                throw new VerificationException("Server returned no headers from height " + startHeight + " while the store must reach height " + targetHeight);
+            }
+
+            List<BlockHeader> headers;
+            try {
+                //Parsed whole here rather than one at a time below, so that a chunk carrying fewer headers than it claims is a refusal like any other
+                //malformed response rather than an exception escaping the sync
+                byte[] bytes = Utils.hexToBytes(chunk.hex);
+                headers = IntStream.range(0, chunk.count).mapToObj(i -> new BlockHeader(bytes, i * HeaderStore.HEADER_LENGTH)).toList();
+            } catch(ProtocolException | IllegalArgumentException e) {
+                //Refusal class, as a short chunk is: the server could not substantiate the range
+                throw new VerificationException("Server returned a malformed header chunk from height " + startHeight, e);
+            }
+
+            if(!headers.getFirst().getPrevBlockHash().equals(store.getTipHash())) {
+                //The server's chain diverges from the store, so reconcile here, then re-read the tip and fetch again
+                reconcile(store, targetHeight);
+                continue;
+            }
+
+            store.append(headers);
+        }
+    }
+
+    /**
+     * Rewinds the store to the fork point it shares with the server's chain and adopts the server's headers above it, where they carry at least as much
+     * work. Equal work is the same height tie of a stale block and must be adopted: a client with one server can only verify against the chain that
+     * server serves, and staying on the replaced block would report every proof from the replacing one as dishonest.
+     */
+    private void reconcile(HeaderStore store, int tipHeight) throws ServerException, IOException {
+        //The fork point is at or below the store tip whatever the server has announced, so the window sits there rather than at the announced tip: a
+        //server hundreds of blocks ahead of a diverged store would otherwise be searched over a range holding no height the store has
+        int endHeight = Math.min(tipHeight, store.getTipHeight() + 1);
+        int startHeight = Math.max(endHeight - MAX_REORG_DEPTH + 1, store.getStartHeight());
+        int count = endHeight - startHeight + 1;
+        BlockHeaders chunk = electrumServerRpc.getBlockHeadersChunk(getTransport(), startHeight, count);
+        if(chunk.count != count) {
+            throw new VerificationException("Server returned " + chunk.count + " of " + count + " headers when reconciling to height " + endHeight);
+        }
+
+        List<BlockHeader> candidate;
+        try {
+            byte[] bytes = Utils.hexToBytes(chunk.hex);
+            candidate = IntStream.range(0, count).mapToObj(i -> new BlockHeader(bytes, i * HeaderStore.HEADER_LENGTH)).toList();
+        } catch(ProtocolException | IllegalArgumentException e) {
+            throw new VerificationException("Server returned a malformed header chunk when reconciling to height " + endHeight, e);
+        }
+
+        //The server's chain to this height is the one the store holds, as when an announcement the store has already synced past names a block it
+        //replaced. Each header commits to the one below it, so a matching top header means there is nothing to reorganise
+        if(candidate.getLast().getHash().equals(store.getHash(endHeight))) {
+            return;
+        }
+
+        //Walk back from the announced tip, checking each header against the one below it, until one descends from a header the store already holds
+        int forkHeight = -1;
+        for(int i = count - 1; i >= 0; i--) {
+            if(candidate.get(i).getPrevBlockHash().equals(store.getHash(startHeight + i - 1))) {
+                forkHeight = startHeight + i - 1;
+                break;
+            }
+            if(i == 0 || !candidate.get(i).getPrevBlockHash().equals(candidate.get(i - 1).getHash())) {
+                break;
+            }
+        }
+
+        if(forkHeight < 0) {
+            throw new VerificationException("Server's chain at height " + endHeight + " shares no fork point with the last " + count + " verified headers");
+        }
+
+        List<BlockHeader> segment = candidate.subList(forkHeight - startHeight + 1, count);
+        HeaderChainState candidateState = store.chainStateAt(forkHeight);
+        for(BlockHeader header : segment) {
+            candidateState.add(header);
+        }
+
+        //Both chains measured from the same pinned anchor, so the work they share below the fork cancels and what remains is what would be adopted
+        //against what would be discarded. In a forward sync the candidate reaches one header past the store tip, which is why it is heavier: the
+        //server holding a header there is what exposed the divergence
+        if(candidateState.getChainWork().compareTo(store.getChainWork()) < 0) {
+            throw new VerificationException("Server's chain from height " + (forkHeight + 1) + " carries less work than the "
+                    + (store.getTipHeight() - forkHeight) + " verified headers it would replace");
+        }
+
+        log.warn("Reorganising the block header store at height " + forkHeight + ", replacing " + (store.getTipHeight() - forkHeight) + " headers with " + segment.size());
+        store.truncate(forkHeight);
+        lastReorgForkHeight = Math.min(lastReorgForkHeight, forkHeight);
+        //Every announced tip is cached there and nothing else rewinds it, so above the fork it would name the replaced block at any height that was
+        //one - only the current tip is replaced by the next announcement. Dropped with the headers they came from
+        int reorganisedFrom = forkHeight;
+        retrievedBlockHeaders.keySet().removeIf(height -> height > reorganisedFrom);
+        //Cleared whole rather than above the fork, the height being half of the key: a reorg is rare, and what it costs is one proof per transaction reopened
+        provenTransactionHeaders.clear();
+        reorgCount++;
+        try {
+            store.append(segment);
+        } finally {
+            //The truncation is what the wallets have to hear about, whether or not the replacement was written: a height above the fork was proven
+            //against a header the store no longer holds either way. Dispatched on this thread, which is a wallet history thread as often as it is the
+            //sync service: the wallet handler hops to the FX thread itself
+            EventManager.get().post(new ChainReorgEvent(forkHeight));
+        }
+    }
+
+    /**
+     * The tip of the verified header store, whose header is null while the store holds nothing above the last pin.
+     */
+    static ChainTip getStoreTip() throws ServerException {
+        HeaderStore store = getHeaderStore();
+        try {
+            //The store's monitor, so that a reorg cannot truncate it between reading the tip height and the header at that height
+            synchronized(store) {
+                int tipHeight = store.getTipHeight();
+                return new ChainTip(tipHeight, store.getHeader(tipHeight));
+            }
+        } catch(IOException e) {
+            throw new ServerException("Could not read the block header store", e);
+        }
+    }
+
+    /**
+     * The header at the given height verified against the compiled-in checkpoints, or null where the connected server cannot substantiate it, which is
+     * reported as a refusal. Heights above the last pin are served from the store, and those below it by hash linkage to a pin.
+     */
+    public BlockHeader getVerifiedHeader(int height) throws ServerException {
+        HeaderCheckpoints checkpoints = Network.get().getHeaderCheckpoints();
+        if(height > checkpoints.getMaxHeight()) {
+            HeaderStore store = getHeaderStore();
+            try {
+                //One object written once per event: the height and the header read separately can straddle a new block
+                ChainTip announced = AppServices.getAnnouncedTip();
+                if(announced != null && announced.height() >= store.getStartHeight() && announced.height() <= store.getTipHeight()
+                        && !announced.header().getHash().equals(store.getHash(announced.height()))) {
+                    //Never serve a stored header while the store tip disagrees with the announced tip: the tie form of a reorg
+                    syncHeaders(announced);
+                } else if(height > store.getTipHeight()) {
+                    syncHeadersTo(height);      //the sync service has not caught up, so fetch on this thread
+                }
+
+                return store.getHeader(height);
+            } catch(UnsupportedMethodException e) {
+                throw e;    //before the catch below, so the caller can disable verification for the session rather than reading a refusal
+            } catch(VerificationException e) {
+                log.warn("Could not verify the header chain to height " + height + ": " + e.getMessage());
+                return null;
+            } catch(ElectrumServerRpcException e) {
+                throw new ServerException(e.getMessage(), e.getCause());    //the server said nothing about this height, so it is a failed call rather than a refusal
+            } catch(IOException e) {
+                throw new ServerException("Could not read the block header store", e);
+            }
+        }
+
+        if(height == 0) {
+            return Network.get().getGenesisHeader();
+        }
+
+        BlockHeader cached = verifiedHistoricalHeaders.get(height);
+        if(cached != null) {
+            return cached;
+        }
+
+        //One call at a time crosses the transport, so this lock defers no fetch the connection would not have deferred anyway. What it buys is dedup: a
+        //concurrent wallet wanting this range finds it cached, and one wanting an overlapping range fetches only the part below what is now cached.
+        //Were the transport ever to carry calls concurrently, this would become the limiter and would want an in flight map keyed by range instead
+        synchronized(headerSyncLock) {
+            cached = verifiedHistoricalHeaders.get(height);
+            if(cached != null) {
+                return cached;
+            }
+
+            int count = getVerifiedAnchorHeight(height, checkpoints.getPinnedHeightAtOrAbove(height)) - height + 1;
+            BlockHeaders chunk;
+            try {
+                chunk = electrumServerRpc.getBlockHeadersChunk(getTransport(), height, count);
+            } catch(UnsupportedMethodException e) {
+                throw e;    //before the catch below, so the caller can disable verification for the session rather than reading a refusal
+            } catch(VerificationException e) {
+                return null;    //a short or malformed response is refusal class here as in the forward sync, never a session failure
+            } catch(ElectrumServerRpcException e) {
+                throw new ServerException(e.getMessage(), e.getCause());
+            }
+
+            return verifyAndCacheRange(height, count, chunk);
+        }
+    }
+
+    /**
+     * The height of the header nearest above the given one that has already been verified this session, and the pinned height where there is none.
+     * A header whose hash chain reaches a verified hash is that hash's ancestor at the corresponding depth, so linking to the nearest verified header
+     * rather than always to the pin is what keeps a later pass over an already fetched period from downloading it again.
+     */
+    private static int getVerifiedAnchorHeight(int height, int pinnedHeight) {
+        for(int above = height + 1; above < pinnedHeight; above++) {
+            if(verifiedHistoricalHeaders.containsKey(above)) {
+                return above;
+            }
+        }
+
+        return pinnedHeight;
+    }
+
+    /**
+     * Verifies a fetched range of headers below the last pin by hash linkage to its anchor and caches it for the session, returning the header the
+     * range starts at, or null where the range is short, malformed or does not reach the anchor. Called with headerSyncLock held.
+     */
+    private static BlockHeader verifyAndCacheRange(int startHeight, int count, BlockHeaders chunk) {
+        int anchorHeight = startHeight + count - 1;
+        BlockHeader anchor = verifiedHistoricalHeaders.get(anchorHeight);
+        Sha256Hash anchorHash = anchor != null ? anchor.getHash() : Network.get().getHeaderCheckpoints().getHash(anchorHeight);
+        List<BlockHeader> headers = getLinkedHeaders(chunk, count, anchorHash);
+        if(headers == null) {
+            return null;
+        }
+
+        for(int i = 0; i < count; i++) {
+            verifiedHistoricalHeaders.put(startHeight + i, headers.get(i));
+        }
+
+        return headers.getFirst();
+    }
+
+    /**
+     * The headers of a requested range verified by hash linkage to the given anchor hash, which is the hash the last header of the range must have, or
+     * null where the response is short or malformed or the chain does not reach the anchor. No proof of work, difficulty or timestamp check is needed
+     * below a pinned header: descent from the pin is what places a header at its height.
+     */
+    static List<BlockHeader> getLinkedHeaders(BlockHeaders chunk, int count, Sha256Hash anchorHash) {
+        if(chunk.count != count) {
+            return null;
+        }
+
+        List<BlockHeader> headers;
+        try {
+            byte[] bytes = Utils.hexToBytes(chunk.hex);
+            headers = IntStream.range(0, count).mapToObj(i -> new BlockHeader(bytes, i * HeaderStore.HEADER_LENGTH)).toList();
+        } catch(ProtocolException | IllegalArgumentException e) {
+            return null;
+        }
+
+        if(!headers.getLast().getHash().equals(anchorHash)) {
+            return null;
+        }
+
+        for(int i = count - 2; i >= 0; i--) {
+            if(!headers.get(i + 1).getPrevBlockHash().equals(headers.get(i).getHash())) {
+                return null;
+            }
+        }
+
+        return headers;
+    }
+
+    /**
+     * Whether transactions are being verified against the connected server, which turns on the header sync and the inclusion proofs alike. The config
+     * setting is asked here so one answer covers the sync, both write boundaries and the connect time enforcement.
+     * <p>
+     * A server below the last pinned header cannot substantiate any height, so asking would refuse every new confirmation and raise a dialog for it.
+     * That accommodation is for a private server still catching up, and is not offered where verification is mandatory: such a server was already
+     * above the last pin when it was accepted at connect, so a later claim to be below it is not a server catching up, and its confirmations belong
+     * in the wallet no more than any other the server cannot prove. A tip not yet announced is not evidence of lagging.
+     * <p>
+     * Not asked of a Bitcoin Core connection at all, whichever backend is fronting it: the node answering is the user's own, and a proof it built
+     * against headers it also supplied establishes nothing it has not already been trusted for.
+     */
+    public static boolean isVerifyingTransactions() {
+        if(!Config.get().isVerifyTransactions() || Config.get().getServerType() == ServerType.BITCOIN_CORE
+                || serverCapability == null || !serverCapability.supportsMerkleProofs()) {
+            return false;
+        }
+
+        if(isVerificationMandatory()) {
+            return true;
+        }
+
+        ChainTip announced = AppServices.getAnnouncedTip();
+        return announced == null || announced.height() >= Network.get().getHeaderCheckpoints().getMaxHeight();
+    }
+
+    /**
+     * Whether the connected server must support transaction verification to be used at all, which is the case for the public server tier on mainnet.
+     * Turned off with verification itself, or a public server would still be rejected for lacking a call nothing is going to make.
+     */
+    static boolean isVerificationMandatory() {
+        return Config.get().isVerifyTransactions() && Config.get().getServerType() == ServerType.PUBLIC_ELECTRUM_SERVER && Network.get() == Network.MAINNET;
+    }
+
     public Map<Sha256Hash, BlockTransaction> getTransactions(Wallet wallet, Map<BlockTransactionHash, Transaction> references, Map<Integer, BlockHeader> blockHeaderMap) throws ServerException {
+        return getTransactions(wallet, references, blockHeaderMap, Collections.emptyMap());
+    }
+
+    /**
+     * Builds the wallet transactions the given references name, recording on each pair proven this pass the hash of the block it was proven against,
+     * which is what identifies it later as held in a block the chain no longer has.
+     */
+    public Map<Sha256Hash, BlockTransaction> getTransactions(Wallet wallet, Map<BlockTransactionHash, Transaction> references, Map<Integer, BlockHeader> blockHeaderMap,
+                                                             Map<BlockTransactionHash, BlockHeader> proven) throws ServerException {
         try {
             Map<Sha256Hash, BlockTransaction> transactionMap = new HashMap<>();
             Set<BlockTransactionHash> checkReferences = new TreeSet<>(references.keySet());
+            Set<Sha256Hash> provenTxids = new HashSet<>();
 
             Set<String> txids = new LinkedHashSet<>(references.size());
             for(BlockTransactionHash reference : references.keySet()) {
@@ -742,28 +2137,57 @@ public class ElectrumServer {
                         continue;
                     }
 
-                    byte[] rawtx = Utils.hexToBytes(strRawTx);
                     Transaction transaction;
 
                     try {
-                        transaction = new Transaction(rawtx);
-                    } catch(ProtocolException e) {
-                        log.error("Could not parse tx: " + strRawTx);
+                        transaction = new Transaction(Utils.hexToBytes(strRawTx));
+                    } catch(Exception e) {
+                        log.error("Could not parse tx: " + strRawTx, e);
                         continue;
                     }
 
-                    Optional<BlockTransactionHash> optionalReference = references.keySet().stream().filter(reference -> reference.getHash().equals(hash)).findFirst();
-                    if(optionalReference.isEmpty()) {
+                    if(!transaction.getTxId().equals(hash)) {
+                        log.error("Server returned transaction " + transaction.getTxId() + " for requested txid " + hash);
+                        throw new IllegalStateException("Server returned a transaction that does not match the requested txid " + hash);
+                    }
+
+                    //One transaction can be referenced at more than one height, and each of those references needs it: left without it, the second
+                    //would be built as unfetchable and would overwrite the first in the map below, which is keyed by transaction alone
+                    List<BlockTransactionHash> matching = references.keySet().stream().filter(reference -> reference.getHash().equals(hash)).toList();
+                    if(matching.isEmpty()) {
                         throw new IllegalStateException("Returned transaction " + hash.toString() + " that was not requested");
                     }
-                    BlockTransactionHash reference = optionalReference.get();
 
-                    references.put(reference, transaction);
+                    matching.forEach(reference -> references.put(reference, transaction));
                 }
             }
 
+            //A fee is the one thing a transaction does not carry and the txid re-hash above cannot test, so where every transaction funding the inputs
+            //is known it is worked out from them, and the fee the server reported is used only where it cannot be. A transaction of this pass reaches
+            //the wallet only once this method returns, so the references are keyed by hash to be asked alongside it
+            Map<Sha256Hash, Transaction> referencedTransactions = new HashMap<>(references.size());
+            for(Map.Entry<BlockTransactionHash, Transaction> entry : references.entrySet()) {
+                if(entry.getValue() != null) {
+                    referencedTransactions.put(entry.getKey().getHash(), entry.getValue());
+                }
+            }
+            Function<Sha256Hash, Transaction> inputTransactions = txid -> {
+                Transaction referenced = referencedTransactions.get(txid);
+                if(referenced != null) {
+                    return referenced;
+                }
+
+                BlockTransaction walletTransaction = wallet == null ? null : wallet.getWalletTransaction(txid);
+                return walletTransaction == null ? null : walletTransaction.getTransaction();
+            };
+
             for(BlockTransactionHash reference : references.keySet()) {
                 Transaction transaction = references.get(reference);
+                if(transaction == null) {
+                    transactionMap.put(reference.getHash(), UNFETCHABLE_BLOCK_TRANSACTION);
+                    checkReferences.removeIf(ref -> ref.getHash().equals(reference.getHash()));
+                    continue;
+                }
 
                 Date blockDate = null;
                 if(reference.getHeight() > 0) {
@@ -776,9 +2200,30 @@ public class ElectrumServer {
                     blockDate = blockHeader.getTimeAsDate();
                 }
 
-                BlockTransaction blockchainTransaction = new BlockTransaction(reference.getHash(), reference.getHeight(), blockDate, reference.getFee(), transaction);
+                BlockTransaction cached = wallet == null ? null : wallet.getWalletTransaction(reference.getHash());
+                Long fee = transaction.getFee(inputTransactions);
+                if(fee == null) {
+                    fee = reference.getFee();
+                }
+                if(fee == null && cached != null && cached.getFee() != null) {
+                    fee = cached.getFee();
+                }
 
-                transactionMap.put(reference.getHash(), blockchainTransaction);
+                //An existing block hash is carried over only while the height it was proven at is unchanged, since a height that has changed has just
+                //been proven against a different block or demoted to unconfirmed
+                BlockHeader provenHeader = proven.get(reference);
+                Sha256Hash blockHash = provenHeader != null ? provenHeader.getHash() :
+                        (cached != null && cached.getHeight() == reference.getHeight() ? cached.getBlockHash() : null);
+                BlockTransaction blockchainTransaction = new BlockTransaction(reference.getHash(), reference.getHeight(), blockDate, fee, transaction, blockHash);
+
+                //Two references for one transaction collapse to one entry here, and the proven pair is the one that must survive: the other is a
+                //height this server would not prove, which the demotion has already replaced with an unconfirmed reference
+                if(provenHeader != null || !provenTxids.contains(reference.getHash())) {
+                    transactionMap.put(reference.getHash(), blockchainTransaction);
+                }
+                if(provenHeader != null) {
+                    provenTxids.add(reference.getHash());
+                }
                 checkReferences.remove(reference);
             }
 
@@ -788,7 +2233,7 @@ public class ElectrumServer {
 
             return transactionMap;
         } catch (IllegalStateException e) {
-            throw new ServerException(e.getCause());
+            throw new ServerException(e.getMessage(), e);
         } catch (ElectrumServerRpcException e) {
             throw new ServerException(e.getMessage(), e.getCause());
         } catch (Exception e) {
@@ -822,7 +2267,7 @@ public class ElectrumServer {
             for(int outputIndex = 0; outputIndex < transaction.getOutputs().size(); outputIndex++) {
                 TransactionOutput output = transaction.getOutputs().get(outputIndex);
                 if (output.getScript().equals(nodeScript)) {
-                    BlockTransactionHashIndex receivingTXO = new BlockTransactionHashIndex(reference.getHash(), reference.getHeight(), blockTransaction.getDate(), reference.getFee(), output.getIndex(), output.getValue());
+                    BlockTransactionHashIndex receivingTXO = new BlockTransactionHashIndex(reference.getHash(), reference.getHeight(), blockTransaction.getDate(), blockTransaction.getFee(), output.getIndex(), output.getValue());
                     transactionOutputs.add(receivingTXO);
                 }
             }
@@ -858,8 +2303,8 @@ public class ElectrumServer {
 
                 TransactionOutput spentOutput = previousTransaction.getTransaction().getOutputs().get((int)input.getOutpoint().getIndex());
                 if(spentOutput.getScript().equals(nodeScript)) {
-                    BlockTransactionHashIndex spendingTXI = new BlockTransactionHashIndex(reference.getHash(), reference.getHeight(), blockTransaction.getDate(), reference.getFee(), inputIndex, spentOutput.getValue());
-                    BlockTransactionHashIndex spentTXO = new BlockTransactionHashIndex(spentTxHash.getHash(), spentTxHash.getHeight(), previousTransaction.getDate(), spentTxHash.getFee(), spentOutput.getIndex(), spentOutput.getValue(), spendingTXI);
+                    BlockTransactionHashIndex spendingTXI = new BlockTransactionHashIndex(reference.getHash(), reference.getHeight(), blockTransaction.getDate(), blockTransaction.getFee(), inputIndex, spentOutput.getValue());
+                    BlockTransactionHashIndex spentTXO = new BlockTransactionHashIndex(spentTxHash.getHash(), spentTxHash.getHeight(), previousTransaction.getDate(), previousTransaction.getFee(), spentOutput.getIndex(), spentOutput.getValue(), spendingTXI);
 
                     Optional<BlockTransactionHashIndex> optionalReference = transactionOutputs.stream().filter(receivedTXO -> receivedTXO.getHash().equals(spentTXO.getHash()) && receivedTXO.getIndex() == spentTXO.getIndex()).findFirst();
                     if(optionalReference.isEmpty()) {
@@ -916,14 +2361,24 @@ public class ElectrumServer {
 
         Map<String, VerboseTransaction> result = electrumServerRpc.getVerboseTransactions(getTransport(), txids, scriptHash);
 
-        Map<Sha256Hash, BlockTransaction> transactionMap = new HashMap<>();
-        for(String txid : result.keySet()) {
-            Sha256Hash hash = Sha256Hash.wrap(txid);
-            BlockTransaction blockTransaction = result.get(txid).getBlockTransaction();
-            transactionMap.put(hash, blockTransaction);
-        }
+        try {
+            Map<Sha256Hash, BlockTransaction> transactionMap = new HashMap<>();
+            for(String txid : result.keySet()) {
+                Sha256Hash hash = Sha256Hash.wrap(txid);
+                VerboseTransaction verboseTransaction = result.get(txid);
+                if(!hash.equals(Sha256Hash.wrap(verboseTransaction.txid))) {
+                    log.error("Server returned transaction " + verboseTransaction.txid + " for requested txid " + hash);
+                    throw new ServerException("Server returned a transaction that does not match the requested txid " + hash);
+                }
 
-        return transactionMap;
+                transactionMap.put(hash, verboseTransaction.getBlockTransaction());
+            }
+
+            return transactionMap;
+        } catch(RuntimeException e) {
+            log.error("Could not retrieve referenced transactions", e);
+            throw new ServerException("Could not retrieve referenced transactions", e);
+        }
     }
 
     public Map<Integer, Double> getFeeEstimates(List<Integer> targetBlocks, boolean useCached) throws ServerException {
@@ -994,7 +2449,12 @@ public class ElectrumServer {
         Double minFeeRateBtcKb = electrumServerRpc.getMinimumRelayFee(getTransport());
         if(minFeeRateBtcKb != null) {
             long minFeeRateSatsKb = (long)(minFeeRateBtcKb * Transaction.SATOSHIS_PER_BITCOIN);
-            return minFeeRateSatsKb / 1000d;
+            double minFeeRate = minFeeRateSatsKb / 1000d;
+            if(minFeeRate >= 0d && minFeeRate <= AppServices.getLongFeeRatesRange().getLast()) {
+                return minFeeRate;
+            }
+
+            log.warn("Server returned an out of range minimum relay fee of " + minFeeRateBtcKb + " BTC/kB, using default");
         }
 
         return Transaction.DEFAULT_MIN_RELAY_FEE;
@@ -1086,13 +2546,21 @@ public class ElectrumServer {
     }
 
     public Sha256Hash broadcastTransaction(Transaction transaction, Long fee) throws ServerException {
-        Sha256Hash txid = broadcastTransactionPrivately(transaction);
-        if(txid != null) {
-            BlockTransaction blkTx = new BlockTransaction(txid, 0, null, fee, transaction);
-            broadcastedTransactions.put(txid, blkTx);
-        }
+        //Eagerly populate broadcastedTransactions before broadcasting and roll back on broadcast failure
+        Sha256Hash txid = transaction.getTxId();
+        BlockTransaction blkTx = new BlockTransaction(txid, 0, null, fee, transaction);
+        broadcastedTransactions.put(txid, blkTx);
 
-        return txid;
+        try {
+            Sha256Hash broadcastTxid = broadcastTransactionPrivately(transaction);
+            if(broadcastTxid == null) {
+                broadcastedTransactions.remove(txid);
+            }
+            return broadcastTxid;
+        } catch(Exception e) {
+            broadcastedTransactions.remove(txid);
+            throw e;
+        }
     }
 
     public Sha256Hash broadcastTransactionPrivately(Transaction transaction) throws ServerException {
@@ -1101,14 +2569,14 @@ public class ElectrumServer {
             List<BroadcastSource> broadcastSources = Arrays.stream(BroadcastSource.values()).filter(src -> src.getSupportedNetworks().contains(Network.get())).collect(Collectors.toList());
             Sha256Hash txid = null;
             for(int i = 1; !broadcastSources.isEmpty(); i++) {
+                BroadcastSource broadcastSource = broadcastSources.remove(new Random().nextInt(broadcastSources.size()));
                 try {
-                    BroadcastSource broadcastSource = broadcastSources.remove(new Random().nextInt(broadcastSources.size()));
                     txid = broadcastSource.broadcastTransaction(transaction);
                     if(Network.get() != Network.MAINNET || i >= MINIMUM_BROADCASTS || broadcastSources.isEmpty()) {
                         return txid;
                     }
                 } catch(BroadcastSource.BroadcastException e) {
-                    //ignore, already logged
+                    log.error("Could not post transaction via " + broadcastSource.getName(), e);
                 }
             }
 
@@ -1178,17 +2646,26 @@ public class ElectrumServer {
                 continue;
             }
 
+            Transaction transaction;
+
             try {
-                Transaction transaction = new Transaction(Utils.hexToBytes(strRawTx));
-                for(TransactionOutput txOutput : transaction.getOutputs()) {
-                    if(txOutput.getScript().equals(outputScript)) {
-                        transactionOutputs.add(txOutput);
-                    }
-                }
-                transactions.add(transaction);
-            } catch(ProtocolException e) {
-                log.error("Could not parse tx: " + strRawTx);
+                transaction = new Transaction(Utils.hexToBytes(strRawTx));
+            } catch(Exception e) {
+                log.error("Could not parse tx: " + strRawTx, e);
+                continue;
             }
+
+            if(!transaction.getTxId().toString().equalsIgnoreCase(txid)) {
+                log.error("Server returned transaction " + transaction.getTxId() + " for requested txid " + txid);
+                throw new ServerException("Server returned a transaction that does not match the requested txid " + txid);
+            }
+
+            for(TransactionOutput txOutput : transaction.getOutputs()) {
+                if(txOutput.getScript().equals(outputScript)) {
+                    transactionOutputs.add(txOutput);
+                }
+            }
+            transactions.add(transaction);
         }
 
         for(Transaction transaction : transactions) {
@@ -1237,41 +2714,527 @@ public class ElectrumServer {
         return Utils.bytesToHex(reversed);
     }
 
-    public static Map<String, List<String>> getSubscribedScriptHashes() {
+    public static Map<String, String> getSubscribedScriptHashes() {
         return subscribedScriptHashes;
     }
 
-    public static String getSubscribedScriptHashStatus(String scriptHash) {
-        List<String> existingStatuses = subscribedScriptHashes.get(scriptHash);
-        if(existingStatuses != null && !existingStatuses.isEmpty()) {
-            return existingStatuses.get(existingStatuses.size() - 1);
+    public static void requireSilentPaymentsSupport() {
+        if(serverCapability == null || !serverCapability.supportsSilentPayments()) {
+            throw new ElectrumServerRpcException("This server does not support silent payments");
+        }
+    }
+
+    static SilentPaymentsScanCache getScanCache(String spAddress) {
+        return spScanCaches.get(spAddress);
+    }
+
+    public static boolean hasSilentPaymentsCache(SilentPaymentScanAddress scanAddress) {
+        return spScanCaches.containsKey(scanAddress.getAddress());
+    }
+
+    public static boolean isSilentPaymentsFullyCovered(SilentPaymentScanAddress scanAddress) {
+        if(scanAddress == null) {
+            return false;
         }
 
-        return null;
+        SilentPaymentsScanCache cache = spScanCaches.get(scanAddress.getAddress());
+        if(cache == null) {
+            return false;
+        }
+
+        cache.lock();
+        try {
+            Integer serverStart = cache.getServerStart();
+            if(!cache.isCompleted() || serverStart == null) {
+                return false;
+            }
+            int earliestPossibleStart = Network.get() == Network.MAINNET ? TAPROOT_ACTIVATION_HEIGHT : 0;
+            return serverStart <= earliestPossibleStart;
+        } finally {
+            cache.unlock();
+        }
+    }
+
+    public static Cormorant getCormorant() {
+        return cormorant;
+    }
+
+    private static void cancelSilentPaymentScans() {
+        for(SilentPaymentsScanCache cache : spScanCaches.values()) {
+            cache.lock();
+            try {
+                cache.cancel();
+            } finally {
+                cache.unlock();
+            }
+        }
+    }
+
+    /**
+     * Holds a silent-payment subscription for the given scan address. Increments the per-cache refcount,
+     * issuing a subscribe RPC the first time the cache is established and re-issuing if the needed start
+     * is lower than the current subscription's start. On RPC failure the refcount is rolled back.
+     * Callers must pair every successful hold with a matching call.
+     */
+    public static void holdSilentPaymentSubscription(Wallet wallet, SilentPaymentScanAddress scanAddress, int neededStart) throws ServerException {
+        requireSilentPaymentsSupport();
+        String spAddress = scanAddress.getAddress();
+        SilentPaymentsScanCache cache = spScanCaches.computeIfAbsent(spAddress, k -> new SilentPaymentsScanCache());
+
+        boolean needSubscribe;
+        SilentPaymentsScanCache.Snapshot rollbackSnapshot = null;
+        cache.lock();
+        try {
+            boolean isFirstCaller = cache.incrementRefCount() == 1;
+            //If a concurrent caller is currently establishing the subscription, wait for serverStart to be
+            //captured before making our widening decision. awaitSubscriptionComplete() releases the cache
+            //lock during the wait, allowing notification handlers to proceed (avoids deadlock with
+            //TcpTransport's read thread).
+            while(cache.hasMultipleHolders() && cache.getServerStart() == null && cache.isScanning()) {
+                try {
+                    cache.awaitSubscriptionComplete();
+                } catch(InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    if(cache.decrementRefCount()) {
+                        spScanCaches.remove(spAddress);
+                    }
+                    throw new ServerException("Interrupted waiting for silent payments subscription to establish", e);
+                }
+            }
+
+            if(cache.isCancelled()) {
+                //First caller's subscribe failed (or scan was cancelled) — propagate.
+                if(cache.decrementRefCount()) {
+                    spScanCaches.remove(spAddress);
+                }
+                throw new ServerException("Silent payments subscription failed for " + spAddress);
+            }
+
+            if(isFirstCaller) {
+                //Cache was just created by computeIfAbsent above, with all defaults. Establish the subscription.
+                needSubscribe = true;
+            } else if(needsWiderCoverage(neededStart, cache.getServerStart())) {
+                //New caller wants earlier history than current coverage; widen and trigger a rescan.
+                rollbackSnapshot = cache.captureSnapshot();
+                cache.restartScan();
+                needSubscribe = true;
+            } else {
+                needSubscribe = false;
+            }
+        } finally {
+            cache.unlock();
+        }
+
+        if(needSubscribe) {
+            try {
+                String scanPrivHex = Utils.bytesToHex(scanAddress.getScanKey().getPrivKeyBytes());
+                String spendPubHex = Utils.bytesToHex(scanAddress.getSpendKey().getPubKey(true));
+                SilentPaymentsSubscription response = electrumServerRpc.subscribeSilentPayments(getTransport(), wallet, scanPrivHex, spendPubHex, neededStart, NO_LABELS);
+                cache.lock();
+                try {
+                    postSilentPaymentsNotified(spAddress, cache.setServerStart(response.start_height, TcpTransport.getLastResponseSequence()));
+                } finally {
+                    cache.unlock();
+                }
+            } catch(Exception e) {
+                cache.lock();
+                try {
+                    if(rollbackSnapshot != null && cache.hasMultipleHolders()) {
+                        postSilentPaymentsNotified(spAddress, cache.restoreFromSnapshot(rollbackSnapshot));
+                    } else {
+                        cache.cancel();
+                    }
+                    if(cache.decrementRefCount()) {
+                        spScanCaches.remove(spAddress);
+                    }
+                } finally {
+                    cache.unlock();
+                }
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * Posts the events for notifications the cache has applied. Called while its lock is still held, so that events
+     * reach the application thread in the order the notifications were applied rather than the order their posting
+     * threads happen to be scheduled in, which a replay racing a live notification would otherwise invert. Posting
+     * only enqueues, so it cannot block on the application thread. Shared by the live notification path and the
+     * replay of notifications held while the subscribe response was still in flight.
+     */
+    static void postSilentPaymentsNotified(String spAddress, List<SilentPaymentsScanCache.Notified> notifiedList) {
+        for(SilentPaymentsScanCache.Notified notified : notifiedList) {
+            Platform.runLater(() -> EventManager.get().post(new SilentPaymentsScanProgressEvent(spAddress, notified.progress())));
+            if(notified.historyUpdated()) {
+                Platform.runLater(() -> EventManager.get().post(new SilentPaymentsHistoryUpdatedEvent(spAddress)));
+            }
+        }
+    }
+
+    private static boolean needsWiderCoverage(int neededStart, int serverStart) {
+        boolean neededIsTimestamp = neededStart >= Transaction.MAX_BLOCK_LOCKTIME;
+        boolean serverIsTimestamp = serverStart >= Transaction.MAX_BLOCK_LOCKTIME;
+        if(neededIsTimestamp != serverIsTimestamp) {
+            return neededIsTimestamp;
+        }
+        return neededStart < serverStart;
+    }
+
+    public List<SilentPaymentsTx> getSilentPaymentHistory(SilentPaymentScanAddress scanAddress) throws ServerException {
+        String spAddress = scanAddress.getAddress();
+        SilentPaymentsScanCache cache = spScanCaches.get(spAddress);
+        if(cache == null) {
+            throw new IllegalStateException("No silent payments subscription is held for " + spAddress);
+        }
+
+        cache.lock();
+        try {
+            while(cache.isScanning()) {
+                try {
+                    cache.awaitScanComplete();
+                } catch(InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new ServerException("Interrupted waiting for silent payments scan to complete", e);
+                }
+            }
+            if(cache.isCancelled()) {
+                throw new ServerException("Silent payments scan was cancelled for " + spAddress.substring(0, 10) + "...");
+            }
+            return cache.snapshotEntries();
+        } finally {
+            cache.unlock();
+        }
+    }
+
+    public static void releaseSilentPaymentSubscription(SilentPaymentScanAddress scanAddress) {
+        String spAddress = scanAddress.getAddress();
+        SilentPaymentsScanCache cache = spScanCaches.get(spAddress);
+        if(cache == null) {
+            return;
+        }
+
+        boolean unsubscribe;
+        cache.lock();
+        try {
+            unsubscribe = cache.decrementRefCount();
+            if(unsubscribe) {
+                cache.cancel();
+                spScanCaches.remove(spAddress);
+            }
+        } finally {
+            cache.unlock();
+        }
+
+        if(unsubscribe) {
+            Platform.runLater(() -> EventManager.get().post(new SilentPaymentsUnsubscribeEvent(scanAddress)));
+        }
+    }
+
+    public Set<WalletNode> processSilentPaymentBatch(Wallet wallet, List<SilentPaymentsTx> entries) throws ServerException {
+        if(entries.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        Map<BlockTransactionHash, Transaction> referencesToFetch = new TreeMap<>();
+        Map<Sha256Hash, BlockTransaction> transactionMap = new HashMap<>();
+        Map<Sha256Hash, byte[]> tweakMap = new HashMap<>();
+        //Track which batch txids the wallet already had. Everything else in transactionMap (via
+        //broadcastedTransactions or via the fetch below) is newly introduced to the wallet by this
+        //batch and needs its spent-input nodes identified.
+        Set<Sha256Hash> alreadyInWallet = new HashSet<>();
+        for(SilentPaymentsTx entry : entries) {
+            Sha256Hash txid;
+            byte[] tweakKey;
+            try {
+                txid = Sha256Hash.wrap(entry.tx_hash);
+                tweakKey = Utils.hexToBytes(entry.tweak_key);
+                if(tweakKey.length != 33) {
+                    throw new ProtocolException("Tweak key must be 33 bytes, not " + tweakKey.length);
+                }
+            } catch(NullPointerException | ProtocolException e) {
+                log.warn("Skipping malformed silent payments entry " + entry + ": " + e);
+                continue;
+            }
+
+            tweakMap.putIfAbsent(txid, tweakKey);
+            BlockTransaction existing = wallet.getWalletTransaction(txid);
+            if(existing != null) {
+                transactionMap.put(txid, existing);
+                alreadyInWallet.add(txid);
+            } else {
+                existing = broadcastedTransactions.get(txid);
+                if(existing != null) {
+                    transactionMap.put(txid, existing);
+                } else {
+                    referencesToFetch.put(new BlockTransaction(txid, entry.height, null, null, null), null);
+                }
+            }
+        }
+
+        if(!referencesToFetch.isEmpty()) {
+            try {
+                //The second write boundary: these heights come from the subscription rather than from a history call, and reach the wallet just the same
+                Map<BlockTransactionHash, BlockHeader> proven = isVerifyingTransactions() ? verifySilentPaymentReferences(wallet, referencesToFetch) : Collections.emptyMap();
+                Map<Integer, BlockHeader> blockHeaderMap = getBlockHeaders(wallet, referencesToFetch.keySet());
+                Map<Sha256Hash, BlockTransaction> fetched = getTransactions(wallet, referencesToFetch, blockHeaderMap, proven);
+                if(isVerifyingSignatures()) {
+                    Function<Sha256Hash, Transaction> inputTransactions = txid -> {
+                        BlockTransaction blockTransaction = fetched.containsKey(txid) ? fetched.get(txid) : wallet.getWalletTransaction(txid);
+                        return blockTransaction == null ? null : blockTransaction.getTransaction();
+                    };
+                    Map<Sha256Hash, Transaction> unconfirmed = fetched.values().stream().filter(blkTx -> blkTx.getHeight() <= 0 && blkTx.getTransaction() != null)
+                            .collect(Collectors.toMap(BlockTransaction::getHash, BlockTransaction::getTransaction));
+                    fetched.keySet().removeAll(getUnsignedTransactions(wallet, unconfirmed, inputTransactions));
+                }
+                transactionMap.putAll(fetched);
+                wallet.updateTransactions(fetched);
+            } finally {
+                postProofEvents(wallet);
+            }
+        }
+
+        ECKey scanPriv = wallet.getSilentPaymentScanAddress().getScanKey();
+        ECKey spendPub = wallet.getSilentPaymentScanAddress().getSpendKey();
+
+        Map<Address, WalletNode> walletAddresses = wallet.getWalletAddresses();
+        Set<WalletNode> affectedNodes = new LinkedHashSet<>();
+
+        int receiveNextIndex = nextIndex(wallet.getNode(KeyPurpose.RECEIVE));
+        int changeNextIndex = nextIndex(wallet.getNode(KeyPurpose.CHANGE));
+
+        for(Map.Entry<Sha256Hash, BlockTransaction> entry : transactionMap.entrySet()) {
+            Sha256Hash txid = entry.getKey();
+            Transaction tx = entry.getValue().getTransaction();
+            byte[] tweakKey = tweakMap.get(txid);
+            if(tweakKey == null) {
+                continue;
+            }
+            try {
+                List<SilentPaymentScanMatch> matches = SilentPaymentUtils.scanTransactionOutputs(scanPriv, spendPub, Collections.emptySet(), tweakKey, tx.getOutputs());
+                for(SilentPaymentScanMatch match : matches) {
+                    KeyPurpose purpose = match.labelIndex() != null && match.labelIndex() == 0 ? KeyPurpose.CHANGE : KeyPurpose.RECEIVE;
+                    int newIndex = purpose == KeyPurpose.CHANGE ? changeNextIndex : receiveNextIndex;
+                    WalletNode newNode = createNodeForMatch(wallet, match, walletAddresses, purpose, newIndex);
+                    if(newNode != null) {
+                        affectedNodes.add(newNode);
+                        walletAddresses.put(wallet.getAddress(newNode), newNode);
+
+                        //Pre-populate the new SP node's transactionOutputs from the match data so the
+                        //first WalletHistoryChangedEvent's isComplete check sees both sides of the spend
+                        //already linked. Without this, the new SP node remains unmarked in
+                        //subscribeWalletNodes (its subscribe-response status is typically null if
+                        //server's scripthash index lags the SP discovery channel), calculateNodeHistory
+                        //never runs for it in this pass, and the user sees a partial first notification
+                        //(spend without self-change credit) corrected by a second notification when the
+                        //scripthash push catches up. A later refresh's calculateNodeHistory rebuilds the
+                        //TXOs from authoritative server history; the matching-(hash,index) preservation
+                        //logic in WalletNode.updateTransactionOutputs keeps labels/statuses intact.
+                        TransactionOutput output = tx.getOutputs().get(match.outputIndex());
+                        BlockTransaction blkTx = entry.getValue();
+                        Set<BlockTransactionHashIndex> initialTxos = new TreeSet<>();
+                        initialTxos.add(new BlockTransactionHashIndex(txid, blkTx.getHeight(), blkTx.getDate(), blkTx.getFee(), match.outputIndex(), output.getValue()));
+                        newNode.updateTransactionOutputs(wallet, initialTxos);
+
+                        if(purpose == KeyPurpose.CHANGE) {
+                            changeNextIndex++;
+                        } else {
+                            receiveNextIndex++;
+                        }
+                    }
+                }
+            } catch(InvalidSilentPaymentException | IllegalArgumentException e) {
+                log.warn("Invalid silent payment tweak for tx " + txid + " — skipping", e);
+            }
+        }
+
+        //Include wallet nodes whose UTXOs are spent by any tx newly introduced to the wallet by this
+        //batch (either fetched here or pulled in from broadcastedTransactions), so calculateNodeHistory
+        //runs for them in the same atomic pass and sets spentBy on the spent TXOs.
+        Map<HashIndex, WalletNode> walletTxoNodes = new HashMap<>();
+        Map<HashIndex, BlockTransactionHashIndex> walletTxoIndex = new HashMap<>();
+        for(Map.Entry<BlockTransactionHashIndex, WalletNode> entry : wallet.getWalletTxos().entrySet()) {
+            HashIndex hashIndex = new HashIndex(entry.getKey().getHash(), entry.getKey().getIndex());
+            walletTxoNodes.put(hashIndex, entry.getValue());
+            walletTxoIndex.put(hashIndex, entry.getKey());
+        }
+        Set<WalletNode> spentInputNodes = new LinkedHashSet<>();
+        Map<WalletNode, Map<HashIndex, BlockTransactionHashIndex>> nodeSpendsByHashIndex = new LinkedHashMap<>();
+        for(Map.Entry<Sha256Hash, BlockTransaction> entry : transactionMap.entrySet()) {
+            if(alreadyInWallet.contains(entry.getKey())) {
+                continue;
+            }
+            Sha256Hash spendingTxid = entry.getKey();
+            BlockTransaction spendingBlkTx = entry.getValue();
+            List<TransactionInput> inputs = spendingBlkTx.getTransaction().getInputs();
+            for(int inputIndex = 0; inputIndex < inputs.size(); inputIndex++) {
+                TransactionInput input = inputs.get(inputIndex);
+                HashIndex inputHashIndex = new HashIndex(input.getOutpoint().getHash(), input.getOutpoint().getIndex());
+                WalletNode node = walletTxoNodes.get(inputHashIndex);
+                if(node == null) {
+                    continue;
+                }
+                spentInputNodes.add(node);
+
+                BlockTransactionHashIndex existingTxo = walletTxoIndex.get(inputHashIndex);
+                if(existingTxo == null || existingTxo.getSpentBy() != null) {
+                    //Already-spent UTXO (e.g. RBF chain) — leave the prior spentBy untouched and let
+                    //calculateNodeHistory reconcile on the next refresh against server-authoritative data.
+                    continue;
+                }
+                BlockTransactionHashIndex spendingTxi = new BlockTransactionHashIndex(spendingTxid, spendingBlkTx.getHeight(), spendingBlkTx.getDate(), spendingBlkTx.getFee(),
+                        inputIndex, existingTxo.getValue());
+                nodeSpendsByHashIndex.computeIfAbsent(node, n -> new HashMap<>()).put(inputHashIndex, spendingTxi);
+            }
+        }
+        affectedNodes.addAll(spentInputNodes);
+
+        //Apply the spentBy pre-populates via TreeSet rebuild for each affected node.
+        for(Map.Entry<WalletNode, Map<HashIndex, BlockTransactionHashIndex>> entry : nodeSpendsByHashIndex.entrySet()) {
+            WalletNode node = entry.getKey();
+            Map<HashIndex, BlockTransactionHashIndex> spendsByHashIndex = entry.getValue();
+            Set<BlockTransactionHashIndex> rebuilt = new TreeSet<>();
+            for(BlockTransactionHashIndex txo : new ArrayList<>(node.getTransactionOutputs())) {
+                BlockTransactionHashIndex spendingTxi = spendsByHashIndex.get(new HashIndex(txo.getHash(), txo.getIndex()));
+                if(spendingTxi != null && txo.getSpentBy() == null) {
+                    rebuilt.add(new BlockTransactionHashIndex(txo.getHash(), txo.getHeight(), txo.getDate(), txo.getFee(), txo.getIndex(), txo.getValue(), spendingTxi));
+                } else {
+                    rebuilt.add(txo);
+                }
+            }
+            node.updateTransactionOutputs(wallet, rebuilt);
+        }
+
+        return affectedNodes;
+    }
+
+    private static int nextIndex(WalletNode purposeNode) {
+        return purposeNode.getChildren().isEmpty() ? 0 : purposeNode.getChildren().stream().mapToInt(WalletNode::getIndex).max().getAsInt() + 1;
+    }
+
+    private WalletNode createNodeForMatch(Wallet wallet, SilentPaymentScanMatch match, Map<Address, WalletNode> walletAddresses, KeyPurpose purpose, int newIndex) {
+        WalletNode purposeNode = wallet.getNode(purpose);
+        WalletNode addressNode = purposeNode.addSilentPaymentChild(wallet, newIndex, match.tweak());
+        if(addressNode == null) {
+            throw new IllegalStateException("Silent payment child already exists at index " + newIndex);
+        }
+
+        if(walletAddresses.containsKey(wallet.getAddress(addressNode))) {
+            purposeNode.getChildren().remove(addressNode);
+            return null;
+        }
+
+        return addressNode;
+    }
+
+    public static String getSubscribedScriptHashStatus(String scriptHash) {
+        return subscribedScriptHashes.get(scriptHash);
     }
 
     public static void updateSubscribedScriptHashStatus(String scriptHash, String status) {
-        List<String> existingStatuses = subscribedScriptHashes.computeIfAbsent(scriptHash, k -> new ArrayList<>());
-        existingStatuses.add(status);
+        subscribedScriptHashes.put(scriptHash, status);
     }
 
     public static void updateRetrievedBlockHeaders(Integer blockHeight, BlockHeader blockHeader) {
         retrievedBlockHeaders.put(blockHeight, blockHeader);
     }
 
+    /**
+     * Sanity checks a server announced chain tip, returning the reason it is invalid, or null if it is valid.
+     * The header must parse, must not be timestamped in the future, and must meet its own claimed proof of work target.
+     */
+    static String getTipValidationError(BlockHeaderTip tip) {
+        return getTipValidationError(tip, System.currentTimeMillis());
+    }
+
+    static String getTipValidationError(BlockHeaderTip tip, long now) {
+        try {
+            if(tip.height < 0 || tip.hex == null) {
+                return "Announced block header tip at height " + tip.height + " is missing or malformed";
+            }
+
+            BlockHeader blockHeader = tip.getBlockHeader();
+            if(!blockHeader.verifyProofOfWork()) {
+                return "Announced block header at height " + tip.height + " does not meet its claimed proof of work target";
+            }
+
+            long nowSecs = now / 1000;
+            if(blockHeader.getTime() > nowSecs + MAXIMUM_FUTURE_TIP_TIME_SECS) {
+                return "Announced block header at height " + tip.height + " is timestamped " + ((blockHeader.getTime() - nowSecs) / 3600) + " hours in the future, indicating either an invalid header or a slow system clock";
+            }
+
+            return null;
+        } catch(Exception e) {
+            return "Error parsing announced block header at height " + tip.height + ": " + e;
+        }
+    }
+
+    /**
+     * Sanity checks a tip announced during a session, being the connect time checks above plus the one thing only a session can establish: a chain
+     * does not rewind below a compiled in pin. A server that has announced a tip at or above the last pinned header and then announces one below it
+     * is not a server catching up, it is withdrawing the ground verification stands on, so the announcement is refused rather than acted on.
+     */
+    static String getAnnouncedTipValidationError(BlockHeaderTip tip) {
+        String tipError = getTipValidationError(tip);
+        if(tipError != null) {
+            return tipError;
+        }
+
+        int maxCheckpointHeight = Network.get().getHeaderCheckpoints().getMaxHeight();
+        if(tipReachedCheckpoints && tip.height < maxCheckpointHeight) {
+            return "Announced block header tip at height " + tip.height + " is below the last verified checkpoint at height " + maxCheckpointHeight
+                    + ", which the connected server has already announced a tip above";
+        }
+
+        return null;
+    }
+
+    /**
+     * Logs and shows a status warning for an invalid tip. A hostile server can send invalid tips at any rate, so warnings are rate limited,
+     * and the status warning is shown at most once per episode of invalid tips (reset on any valid tip).
+     */
+    static void warnInvalidTip(String message) {
+        long now = System.currentTimeMillis();
+        if(now - lastTipWarningLoggedAt > TIP_WARNING_INTERVAL_MILLIS) {
+            lastTipWarningLoggedAt = now;
+            log.warn(message);
+
+            if(!invalidTipWarned) {
+                invalidTipWarned = true;
+                Platform.runLater(() -> EventManager.get().post(new StatusEvent("Warning: Ignoring invalid block header announced by the server", 120)));
+            }
+        }
+    }
+
+    private static void initializeTip(BlockHeaderTip tip) {
+        updateTipReceived(tip.height);
+        //Public servers are never mid-sync, so seed the staleness clock from the tip timestamp to warn promptly on an already stale server
+        if(Config.get().getServerType() == ServerType.PUBLIC_ELECTRUM_SERVER) {
+            lastTipReceivedAt = Math.min(lastTipReceivedAt, tip.getBlockHeader().getTime() * 1000);
+        }
+    }
+
+    static void updateTipReceived(int height) {
+        lastTipReceivedAt = System.currentTimeMillis();
+        staleTipWarned = false;
+        invalidTipWarned = false;
+        if(height >= Network.get().getHeaderCheckpoints().getMaxHeight()) {
+            tipReachedCheckpoints = true;
+        }
+    }
+
     public static ServerCapability getServerCapability(List<String> serverVersion) {
         if(!serverVersion.isEmpty()) {
             String server = serverVersion.getFirst().toLowerCase(Locale.ROOT);
             if(server.contains("electrumx")) {
-                return new ServerCapability(true, true);
+                return new ServerCapability(true, true, true);
             }
 
             if(server.startsWith("frigate")) {
-                return new ServerCapability(true, true);
+                return new ServerCapability(true, true, true);
             }
 
             if(server.startsWith("cormorant")) {
-                return new ServerCapability(true, false, true, false);
+                return new ServerCapability(true, false, true, false, true);
             }
 
             if(server.startsWith("electrs/")) {
@@ -1283,7 +3246,7 @@ public class ElectrumServer {
                 try {
                     Version version = new Version(electrsVersion);
                     if(version.compareTo(ELECTRS_MIN_BATCHING_VERSION) >= 0) {
-                        return new ServerCapability(true, true);
+                        return new ServerCapability(true, true, true);
                     }
                 } catch(Exception e) {
                     //ignore
@@ -1299,7 +3262,7 @@ public class ElectrumServer {
                 try {
                     Version version = new Version(fulcrumVersion);
                     if(version.compareTo(FULCRUM_MIN_BATCHING_VERSION) >= 0) {
-                        return new ServerCapability(true, true);
+                        return new ServerCapability(true, true, true);
                     }
                 } catch(Exception e) {
                     //ignore
@@ -1318,7 +3281,7 @@ public class ElectrumServer {
                     Version version = new Version(mempoolElectrsVersion);
                     if(version.compareTo(MEMPOOL_ELECTRS_MIN_BATCHING_VERSION) > 0 ||
                             (version.compareTo(MEMPOOL_ELECTRS_MIN_BATCHING_VERSION) == 0 && (!mempoolElectrsSuffix.contains("dev") || mempoolElectrsSuffix.contains("dev-249848d")))) {
-                        return new ServerCapability(true, 25, false);
+                        return new ServerCapability(true, 25, false, true);
                     }
                 } catch(Exception e) {
                     //ignore
@@ -1326,11 +3289,11 @@ public class ElectrumServer {
             }
 
             if(server.startsWith("electrumpersonalserver")) {
-                return new ServerCapability(false, false);
+                return new ServerCapability(false, false, false);
             }
         }
 
-        return new ServerCapability(false, true);
+        return new ServerCapability(false, true, true);
     }
 
     public static class ServerVersionService extends Service<List<String>> {
@@ -1393,6 +3356,8 @@ public class ElectrumServer {
                                 ElectrumServer.cormorant = new Cormorant(subscribe);
                                 ElectrumServer.coreElectrumServer = cormorant.start();
                             }
+                        } catch(CormorantBitcoindUnsupportedException e) {
+                            throw new ServerException(e.getMessage());
                         } catch(CormorantBitcoindException e) {
                             ElectrumServer.cormorant = null;
                             log.debug("Cannot start cormorant: " + e.getMessage() + ". Starting BWT...");
@@ -1455,6 +3420,8 @@ public class ElectrumServer {
                     if(firstCall) {
                         electrumServer.connect();
 
+                        //What the last server announced says nothing about this one, and is cleared before the thread that dispatches announcements exists
+                        tipReachedCheckpoints = false;
                         reader = new Thread(new ReadRunnable(), "ElectrumServerReadThread");
                         reader.setDaemon(true);
                         reader.setUncaughtExceptionHandler(ConnectionService.this);
@@ -1466,17 +3433,42 @@ public class ElectrumServer {
                         List<String> serverVersion = electrumServer.getServerVersion();
                         firstCall = false;
 
-                        //If electrumx is detected, we can upgrade to batched RPC. Electrs/EPS do not support batching.
                         serverCapability = getServerCapability(serverVersion);
                         if(serverCapability.supportsBatching()) {
                             log.debug("Upgrading to batched JSON-RPC");
                             electrumServerRpc = new BatchedElectrumServerRpc(electrumServerRpc.getIdCounterValue(), serverCapability.getMaxTargetBlocks());
                         }
 
+                        if(serverCapability.supportsServerFeatures()) {
+                            try {
+                                ServerFeatures features = electrumServer.getServerFeatures();
+                                serverCapability.withServerFeatures(features);
+                            } catch(ElectrumServerRpcException e) {
+                                log.debug("Call to server.features failed for " + serverVersion, e);
+                            }
+                        }
+
+                        if(isVerificationMandatory() && !serverCapability.supportsMerkleProofs()) {
+                            throw new ServerException("Server does not support transaction verification (blockchain.transaction.get_merkle)");
+                        }
+
                         BlockHeaderTip tip;
                         if(subscribe) {
                             tip = electrumServer.subscribeBlockHeaders();
+                            String tipError = getTipValidationError(tip);
+                            if(tipError != null) {
+                                throw new ServerException(tipError);
+                            }
+                            if(isVerificationMandatory()) {
+                                //A server below the last pinned header cannot serve the header sync, and would report every proof as refused
+                                int maxCheckpointHeight = Network.get().getHeaderCheckpoints().getMaxHeight();
+                                if(tip.height < maxCheckpointHeight) {
+                                    throw new ServerException("Server is at height " + tip.height + ", below the last verified checkpoint at height " + maxCheckpointHeight);
+                                }
+                            }
+                            initializeTip(tip);
                             subscribedScriptHashes.clear();
+                            latestRecent = null;
                         } else {
                             tip = new BlockHeaderTip();
                         }
@@ -1496,6 +3488,7 @@ public class ElectrumServer {
                     } else {
                         if(reader.isAlive()) {
                             electrumServer.ping();
+                            checkTipStaleness();
 
                             long elapsed = System.currentTimeMillis() - feeRatesRetrievedAt;
                             if(elapsed > FEE_RATES_PERIOD) {
@@ -1506,13 +3499,23 @@ public class ElectrumServer {
                                 return new FeeRatesUpdatedEvent(blockTargetFeeRates, mempoolRateSizes, nextBlockMedianFeeRate);
                             }
                         } else {
-                            closeConnection();
+                            throw new ServerException("Connection to server lost");
                         }
                     }
 
                     return null;
                 }
             };
+        }
+
+        private void checkTipStaleness() {
+            if(subscribe && Network.get() == Network.MAINNET && lastTipReceivedAt > 0 && !staleTipWarned && System.currentTimeMillis() - lastTipReceivedAt > STALE_TIP_WARNING_AGE_MILLIS) {
+                staleTipWarned = true;
+                long hours = (System.currentTimeMillis() - lastTipReceivedAt) / (60 * 60 * 1000);
+                String warning = "Warning: The connected server has not announced a new block for over " + hours + " hours, so its chain view may be stale";
+                log.warn(warning);
+                Platform.runLater(() -> EventManager.get().post(new StatusEvent(warning, 120)));
+            }
         }
 
         public void closeConnection() {
@@ -1653,6 +3656,144 @@ public class ElectrumServer {
                     log.debug("Error subscribing to recent mempool transaction outputs", e);
                 }
             }
+
+            BlockTransactionHash reference = getProofReference(event);
+            if(reference != null) {
+                TransactionProofService transactionProofService = new TransactionProofService(reference);
+                transactionProofService.start();
+            }
+        }
+
+        static BlockTransactionHash getProofReference(WalletNodeHistoryChangedEvent event) {
+            BlockTransaction blkTx = confirmingRecent.get(event.getScriptHash());
+            Integer currentHeight = AppServices.getCurrentBlockHeight();
+            if(blkTx == null || currentHeight == null || !isVerifyingTransactions()) {
+                return null;
+            }
+
+            String confirmedStatus = getScriptHashStatus(List.of(new ScriptHashTx(currentHeight, blkTx.getHashAsString(), blkTx.getFee())));
+            if(!Objects.equals(confirmedStatus, event.getStatus())) {
+                return null;
+            }
+
+            confirmingRecent.remove(event.getScriptHash());
+            return new BlockTransaction(blkTx.getHash(), currentHeight, null, blkTx.getFee(), null);
+        }
+    }
+
+    /**
+     * Keeps the verified header store level with the chain tip. There is nothing to poll - the tip subscription pushes every new block - so this
+     * service is event driven: it is restarted whenever a tip is announced, cancels itself once a run succeeds, and is cancelled on disconnection so
+     * that a retry cannot open a transport of its own. Its period is therefore only the interval at which a failed run is retried.
+     */
+    public static class HeaderSyncService extends ScheduledService<Void> {
+        public static final int RETRY_PERIOD_SECS = 60;
+
+        //The pair from the event that last restarted this service: the height and the header of one announcement, never of two
+        private volatile ChainTip announcedTip;
+
+        //The announcement whose run last failed, so that one still unsubstantiated when its retry fails too is refused rather than retried indefinitely.
+        //Held as the tip rather than a count, since a run cancelled by a later announcement can still fail after it and would spend that one's retry
+        private volatile ChainTip failedTip;
+
+        @Override
+        protected Task<Void> createTask() {
+            return new Task<>() {
+                @Override
+                protected Void call() throws Exception {
+                    ChainTip tip = announcedTip;
+                    try {
+                        syncAnnouncedHeaders(tip);
+                    } catch(VerificationException | UnsupportedMethodException e) {
+                        refuseAnnouncedTip(tip, e);
+                    } catch(ServerException | ElectrumServerRpcException e) {
+                        //A failed call says nothing about the chain on its own, but a server answering every request for these headers with an error
+                        //has not substantiated the tip any more than one serving the wrong headers
+                        if(failedTip != tip || !isConnected()) {
+                            failedTip = tip;
+                            throw e;
+                        }
+
+                        refuseAnnouncedTip(tip, e);
+                    }
+
+                    return null;
+                }
+            };
+        }
+
+        /**
+         * Warns of an announced tip the header sync could not substantiate, and sets the chain tip back to the verified store tip where the store holds a
+         * header to set it back to, an empty store leaving only the warning. An announced header need
+         * only meet the target it claims for itself, which at the minimum difficulty costs nothing to produce, so until it links into the chain the height
+         * it arrived with is only the server's claim, as is every confirmation count taken from it.
+         */
+        private void refuseAnnouncedTip(ChainTip tip, Exception e) throws ServerException {
+            ChainTip storeTip = getStoreTip();
+            Platform.runLater(() -> {
+                //A run overtaken by a later announcement has nothing left to correct
+                if(tip != announcedTip) {
+                    return;
+                }
+
+                if(storeTip.header() != null) {
+                    EventManager.get().post(new NewBlockEvent(storeTip.height(), storeTip.header()));
+                }
+                warnInvalidTip("Could not verify the block header chain to the tip announced at height " + tip.height() + ": " + e.getMessage());
+            });
+        }
+
+        /**
+         * The body of a run, which happens on a background thread: the connection check is therefore the transport level one, since AppServices reads
+         * a JavaFX Service and may only be called from the application thread. Without the check a retry firing after the connection closed would
+         * have getTransport() open a transport of its own, outside the connection lifecycle.
+         */
+        static void syncAnnouncedHeaders(ChainTip tip) throws ServerException {
+            if(!isConnected()) {
+                return;
+            }
+
+            ElectrumServer electrumServer = new ElectrumServer();
+            try {
+                electrumServer.syncHeaders(tip);
+            } catch(UnsupportedMethodException e) {
+                //Without this call the store can never advance, so verification would refuse every new confirmation for the rest of the session
+                if(isVerificationMandatory()) {
+                    //Leaving the capability on is what lets the next wallet history thread raise this and rotate the server, which this service cannot do.
+                    //Rethrown so the tip is refused: where verification is mandatory, a server without the call has not substantiated the height it announced
+                    throw e;
+                } else {
+                    log.warn("Server does not support " + e.getMethod() + ", disabling transaction verification for this session");
+                    serverCapability.withMerkleProofs(false);
+                }
+            }
+        }
+
+        @Subscribe
+        public void connected(ConnectionEvent event) {
+            if(!isVerifyingTransactions()) {
+                return;
+            }
+
+            announcedTip = new ChainTip(event.getBlockHeight(), event.getBlockHeader());
+            restart();
+        }
+
+        @Subscribe
+        public void newBlock(NewBlockEvent event) {
+            if(!isVerifyingTransactions()) {
+                return;
+            }
+
+            //A header that extends the store, one that leaves a gap, and one that conflicts with it are all handled by the sync itself, which appends
+            //an extending header without fetching anything, so there is nothing to classify here
+            announcedTip = new ChainTip(event.getHeight(), event.getBlockHeader());
+            restart();
+        }
+
+        @Subscribe
+        public void disconnection(DisconnectionEvent event) {
+            cancel();
         }
     }
 
@@ -1669,15 +3810,16 @@ public class ElectrumServer {
         }
     }
 
-    private static class WalletLock {
-        public boolean initialized;
+    private static class WalletSyncLock {
+        public boolean scriptHashesInitialized;
+        public boolean storedProofsChecked;
+        public Integer storedProofsFromHeight;
     }
 
     public static class TransactionHistoryService extends Service<Boolean> {
         private final Wallet mainWallet;
         private final List<Wallet> filterToWallets;
         private final Set<WalletNode> filterToNodes;
-        private final static Map<Integer, WalletLock> walletLocks = Collections.synchronizedMap(new HashMap<>());
 
         public TransactionHistoryService(Wallet wallet) {
             this.mainWallet = wallet;
@@ -1701,86 +3843,96 @@ public class ElectrumServer {
                         }
                     }
 
-                    boolean historyFetched = getTransactionHistory(mainWallet);
-                    for(Wallet childWallet : new ArrayList<>(mainWallet.getChildWallets())) {
-                        if(childWallet.isNested()) {
-                            historyFetched |= getTransactionHistory(childWallet);
-                        }
-                    }
-
-                    return historyFetched;
+                    ElectrumServer electrumServer = new ElectrumServer();
+                    return electrumServer.fetchAndCalculateHistory(mainWallet, filterToWallets, filterToNodes);
                 }
             };
         }
+    }
 
-        private boolean getTransactionHistory(Wallet wallet) throws ServerException {
-            if(filterToWallets != null && !filterToWallets.contains(wallet)) {
-                return false;
-            }
+    public static class SilentPaymentScanService extends Service<Boolean> {
+        private final Wallet wallet;
+        private final SilentPaymentScanAddress scanAddress;
+        private final boolean shouldHold;
+        private final int neededStart;
+        private volatile boolean releasedHold;
 
-            Set<WalletNode> nodes = (filterToNodes == null ? null : filterToNodes.stream().filter(node -> node.getWallet().equals(wallet)).collect(Collectors.toSet()));
-            if(filterToNodes != null && nodes.isEmpty()) {
-                return false;
-            }
+        public SilentPaymentScanService(Wallet wallet, boolean shouldHold, int neededStart) {
+            this.wallet = wallet;
+            this.scanAddress = wallet.getSilentPaymentScanAddress();
+            this.shouldHold = shouldHold;
+            this.neededStart = neededStart;
+        }
 
-            if(wallet.getScriptType() == ScriptType.MWEB) {
-                return true;
-            }
+        public boolean isReleasedHold() {
+            return releasedHold;
+        }
 
-            WalletLock walletLock = walletLocks.computeIfAbsent(wallet.hashCode(), w -> new WalletLock());
-            synchronized(walletLock) {
-                if(!walletLock.initialized) {
-                    addCalculatedScriptHashes(wallet);
-                    walletLock.initialized = true;
+        @Override
+        protected Task<Boolean> createTask() {
+            return new Task<>() {
+                @Override
+                protected Boolean call() throws ServerException {
+                    boolean acquired = shouldHold || !ElectrumServer.hasSilentPaymentsCache(scanAddress);
+                    if(acquired) {
+                        ElectrumServer.holdSilentPaymentSubscription(wallet, scanAddress, neededStart);
+                    }
+                    try {
+                        ElectrumServer electrumServer = new ElectrumServer();
+                        List<SilentPaymentsTx> entries = electrumServer.getSilentPaymentHistory(scanAddress);
+                        Set<WalletNode> affectedNodes = electrumServer.processSilentPaymentBatch(wallet, entries);
+
+                        //Force affected nodes to be marked in subscribeWalletNodes regardless of whether
+                        //their scripthash status push has arrived yet. Without this, a spent-input node
+                        //whose push lags the SP-discovery channel won't be marked (its server-reported
+                        //status still matches retrievedScriptHashes), and calculateNodeHistory won't run
+                        //for it in this pass — leaving spentBy unset on the spent TXO.
+                        for(WalletNode node : affectedNodes) {
+                            clearRetrievedScriptHash(getScriptHash(node));
+                        }
+
+                        //First refresh (acquired): fetch all nodes to re-subscribe scripthashes the server forgot.
+                        //Live delta: only the affected ones (newly-discovered SP nodes + nodes spent by the batch).
+                        //A reorg needs all nodes as well: a transaction re-included at the same height is already in the wallet, so the batch reports
+                        //nothing affected, while the nodes proving it against the discarded block are revisited only by a fetch of every node.
+                        Set<WalletNode> nodesToFetch = acquired || hasReorgInvalidatedScriptHashes(wallet) ? null : affectedNodes;
+                        if(nodesToFetch != null && nodesToFetch.isEmpty()) {
+                            return true;
+                        }
+                        return electrumServer.fetchAndCalculateHistory(wallet, null, nodesToFetch);
+                    } catch(Exception e) {
+                        if(acquired) {
+                            ElectrumServer.releaseSilentPaymentSubscription(scanAddress);
+                            releasedHold = true;
+                        }
+                        throw e;
+                    }
                 }
+            };
+        }
+    }
 
-                if(isConnected()) {
-                    ElectrumServer electrumServer = new ElectrumServer();
+    public static class SilentPaymentsUnsubscribeService extends Service<Boolean> {
+        private final SilentPaymentScanAddress scanAddress;
 
-                    Map<String, String> previousScriptHashes = getCalculatedScriptHashes(wallet);
-                    Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap = (nodes == null ? electrumServer.getHistory(wallet) : electrumServer.getHistory(wallet, nodes));
-                    electrumServer.getReferencedTransactions(wallet, nodeTransactionMap);
-                    electrumServer.calculateNodeHistory(wallet, nodeTransactionMap);
+        public SilentPaymentsUnsubscribeService(SilentPaymentScanAddress scanAddress) {
+            this.scanAddress = scanAddress;
+        }
 
-                    //Add all of the script hashes we have now fetched the history for so we don't need to fetch again until the script hash status changes
-                    Set<WalletNode> updatedNodes = new HashSet<>();
-                    Map<WalletNode, Set<BlockTransactionHashIndex>> walletNodes = wallet.getWalletNodes();
-                    for(WalletNode node : (nodes == null ? walletNodes.keySet() : nodes)) {
-                        String scriptHash = getScriptHash(node);
-                        String subscribedStatus = getSubscribedScriptHashStatus(scriptHash);
-                        if(!Objects.equals(subscribedStatus, retrievedScriptHashes.get(scriptHash))) {
-                            updatedNodes.add(node);
-                        }
-                        retrievedScriptHashes.put(scriptHash, subscribedStatus);
+        @Override
+        protected Task<Boolean> createTask() {
+            return new Task<>() {
+                @Override
+                protected Boolean call() throws ServerException {
+                    if(ElectrumServer.hasSilentPaymentsCache(scanAddress)) {
+                        return false;
                     }
-
-                    //If wallet was not empty, check if all used updated nodes have changed history
-                    if(nodes == null && previousScriptHashes.values().stream().anyMatch(Objects::nonNull)) {
-                        if(!updatedNodes.isEmpty()
-                                && updatedNodes.equals(walletNodes.entrySet().stream().filter(entry -> !entry.getValue().isEmpty()).map(Map.Entry::getKey).collect(Collectors.toSet()))
-                                && !sameHeightTxioScriptHashes.containsAll(updatedNodes.stream().map(ElectrumServer::getScriptHash).collect(Collectors.toSet()))) {
-                            //All used nodes on a non-empty wallet have changed history. Abort and trigger a full refresh.
-                            log.info("All used nodes on a non-empty wallet have changed history. Triggering a full wallet refresh.");
-                            throw new AllHistoryChangedException();
-                        }
-                    }
-
-                    //Clear transaction outputs for nodes that have no history - this is useful when a transaction is replaced in the mempool
-                    if(nodes != null) {
-                        for(WalletNode node : nodes) {
-                            String scriptHash = getScriptHash(node);
-                            if(retrievedScriptHashes.get(scriptHash) == null && !node.getTransactionOutputs().isEmpty()) {
-                                log.debug("Clearing transaction history for " + node);
-                                node.getTransactionOutputs().clear();
-                            }
-                        }
-                    }
-
+                    String scanPrivHex = Utils.bytesToHex(scanAddress.getScanKey().getPrivKeyBytes());
+                    String spendPubHex = Utils.bytesToHex(scanAddress.getSpendKey().getPubKey(true));
+                    electrumServerRpc.unsubscribeSilentPayments(getTransport(), scanPrivHex, spendPubHex);
                     return true;
                 }
-
-                return false;
-            }
+            };
         }
     }
 
@@ -1983,6 +4135,65 @@ public class ElectrumServer {
         }
     }
 
+    public static class TransactionProofService extends Service<Map<String, TransactionMerkleProof>> {
+        private final BlockTransactionHash reference;
+
+        public TransactionProofService(BlockTransactionHash reference) {
+            this.reference = reference;
+        }
+
+        @Override
+        protected Task<Map<String, TransactionMerkleProof>> createTask() {
+            return new Task<>() {
+                @Override
+                protected Map<String, TransactionMerkleProof> call() {
+                    try {
+                        //getTransport() opens one where there is none, so a task running after the connection closed must not reach it
+                        if(isConnected()) {
+                            return electrumServerRpc.getTransactionMerkleProofs(getTransport(), null, List.of(reference));
+                        }
+                    } catch(Exception e) {
+                        log.debug("Error retrieving proof for transaction", e);
+                    }
+
+                    return Collections.emptyMap();
+                }
+            };
+        }
+    }
+
+    /**
+     * Proves a transaction the tab is displaying, off the thread that fetched it: the proof is a round trip of its own, and the header it is checked
+     * against can cost a range fetch below the last pin, neither of which the transaction should wait behind to be shown.
+     * <p>
+     * Succeeding with no header is the server answering that it will not substantiate the height, which is a finding. Failing is not reaching the
+     * server at all, which is nothing, and the two are kept apart here so that the caller can tell what it has been told.
+     */
+    public static class TransactionVerificationService extends Service<BlockHeader> {
+        private final Sha256Hash txid;
+        private final int height;
+
+        public TransactionVerificationService(Sha256Hash txid, int height) {
+            this.txid = txid;
+            this.height = height;
+        }
+
+        @Override
+        protected Task<BlockHeader> createTask() {
+            return new Task<>() {
+                @Override
+                protected BlockHeader call() throws ServerException {
+                    //getTransport() opens one where there is none, so a task running after the connection closed must not reach it
+                    if(!isConnected()) {
+                        throw new ServerException("Not connected");
+                    }
+
+                    return new ElectrumServer().getProvenHeader(txid, height);
+                }
+            };
+        }
+    }
+
     public static class BroadcastTransactionService extends Service<Sha256Hash> {
         private final Transaction transaction;
         private final Long fee;
@@ -2083,8 +4294,10 @@ public class ElectrumServer {
             }
             subscribedRecent.keySet().removeAll(unsubscribeScriptHashes);
             broadcastRecent.keySet().removeAll(unsubscribeScriptHashes);
+            confirmingRecent.keySet().removeAll(unsubscribeScriptHashes);
 
             Map<String, String> subscribeScriptHashes = new HashMap<>();
+            Map<String, BlockTransaction> confirming = new HashMap<>();
             List<BlockTransaction> recentTransactions = electrumServer.getRecentMempoolTransactions();
             for(BlockTransaction blkTx : recentTransactions) {
                 for(int i = 0; i < blkTx.getTransaction().getOutputs().size(); i++) {
@@ -2092,6 +4305,7 @@ public class ElectrumServer {
                     String scriptHash = getScriptHash(txOutput);
                     if(!subscribedScriptHashes.containsKey(scriptHash)) {
                         subscribeScriptHashes.put("m/" + subscribeScriptHashes.size(), scriptHash);
+                        confirming.put(scriptHash, blkTx);
                     }
                     if(Math.random() < 0.1d) {
                         break;
@@ -2114,23 +4328,26 @@ public class ElectrumServer {
                 try {
                     electrumServerRpc.subscribeScriptHashes(transport, null, subscribeScriptHashes);
                     subscribeScriptHashes.values().forEach(scriptHash -> subscribedRecent.put(scriptHash, currentHeight));
+                    confirmingRecent.putAll(confirming);
                 } catch(ElectrumServerRpcException e) {
                     log.debug("Error subscribing to recent mempool transactions", e);
                 }
             }
 
+            latestRecent = new RecentTransactions(currentHeight, System.currentTimeMillis(), recentTransactions);
             if(!recentTransactions.isEmpty()) {
-                broadcastRecent(electrumServer, recentTransactions);
+                broadcastRecent(electrumServer);
             }
         }
 
-        private void broadcastRecent(ElectrumServer electrumServer, List<BlockTransaction> recentTransactions) {
+        private void broadcastRecent(ElectrumServer electrumServer) {
             ScheduledService<Void> broadcastService = new ScheduledService<>() {
                 @Override
                 protected Task<Void> createTask() {
                     return new Task<>() {
                         @Override
                         protected Void call() throws Exception {
+                            List<BlockTransaction> recentTransactions = getBroadcastableRecent(latestRecent, AppServices.getCurrentBlockHeight(), System.currentTimeMillis());
                             if(!recentTransactions.isEmpty()) {
                                 Random random = new Random();
                                 if(random.nextBoolean()) {
@@ -2146,13 +4363,23 @@ public class ElectrumServer {
                     };
                 }
             };
-            broadcastService.setDelay(Duration.seconds(Math.random() * 60 * 10));
+            broadcastService.setDelay(Duration.seconds(Math.random() * RECENT_BROADCAST_MAX_DELAY_SECS));
             broadcastService.setPeriod(Duration.hours(1));
             broadcastService.setOnSucceeded(_ -> broadcastService.cancel());
             broadcastService.setOnFailed(_ -> broadcastService.cancel());
             broadcastService.start();
         }
+
+        static List<BlockTransaction> getBroadcastableRecent(RecentTransactions recent, Integer currentHeight, long now) {
+            if(recent != null && currentHeight != null && recent.height() == currentHeight && now - recent.fetchedMillis() <= RECENT_BROADCAST_MAX_DELAY_SECS * 1000L) {
+                return recent.transactions();
+            }
+
+            return Collections.emptyList();
+        }
     }
+
+    record RecentTransactions(int height, long fetchedMillis, List<BlockTransaction> transactions) {}
 
     public static class WalletDiscoveryService extends Service<Optional<List<Wallet>>> {
         private final List<Wallet> wallets;
@@ -2336,9 +4563,15 @@ public class ElectrumServer {
                     addCalculatedScriptHashes(notificationNode);
 
                     ElectrumServer electrumServer = new ElectrumServer();
-                    Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap = electrumServer.getHistory(notificationWallet, List.of(notificationNode));
-                    electrumServer.getReferencedTransactions(notificationWallet, nodeTransactionMap);
-                    electrumServer.calculateNodeHistory(notificationWallet, nodeTransactionMap);
+                    Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap;
+                    try {
+                        nodeTransactionMap = electrumServer.getHistory(notificationWallet, List.of(notificationNode));
+                        electrumServer.getReferencedTransactions(notificationWallet, nodeTransactionMap);
+                        electrumServer.calculateNodeHistory(notificationWallet, nodeTransactionMap);
+                    } finally {
+                        //The notification wallet is derived rather than opened, so what it could not prove is reported against the wallet it belongs to
+                        electrumServer.postProofEvents(notificationWallet, wallet);
+                    }
 
                     List<Wallet> addedWallets = new ArrayList<>();
                     if(!nodeTransactionMap.isEmpty()) {

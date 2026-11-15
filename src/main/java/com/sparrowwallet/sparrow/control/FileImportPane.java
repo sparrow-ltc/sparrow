@@ -15,6 +15,7 @@ import com.sparrowwallet.sparrow.io.ImportException;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.AccessibleRole;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBase;
@@ -77,6 +78,7 @@ public abstract class FileImportPane extends TitledDescriptionPane {
 
             SegmentedButton segmentedButton = new SegmentedButton();
             segmentedButton.getButtons().addAll(scanButton, fileButton);
+            segmentedButton.getButtons().forEach(button -> button.setAccessibleRole(AccessibleRole.BUTTON));
             return segmentedButton;
         } else if(scannable) {
             importButton = new Button("Scan...");
@@ -127,6 +129,7 @@ public abstract class FileImportPane extends TitledDescriptionPane {
                     setExpanded(true);
                 } else {
                     try(InputStream inputStream = new BufferedInputStream(new FileInputStream(file))) {
+                        wallets = null;
                         importFile(file.getName(), inputStream, password);
                     };
                 }
@@ -172,6 +175,7 @@ public abstract class FileImportPane extends TitledDescriptionPane {
                 }
             } else if(result.payload != null) {
                 try {
+                    wallets = null;
                     importFile(importer.getName(), new ByteArrayInputStream(result.payload.getBytes(StandardCharsets.UTF_8)), null);
                 } catch(Exception e) {
                     log.error("Error importing QR", e);
@@ -195,8 +199,8 @@ public abstract class FileImportPane extends TitledDescriptionPane {
                 log.error("Error importing QR", result.exception);
                 setError("Import Error", result.exception.getMessage());
             } else {
-                setError("Import Error", null);
-                setExpanded(true);
+                wallets = null;
+                setError("Import Error", "The scanned QR code does not contain a wallet or key.");
             }
         }
     }
@@ -210,7 +214,9 @@ public abstract class FileImportPane extends TitledDescriptionPane {
             for(Wallet wallet : wallets) {
                 if(scriptType.equals(wallet.getScriptType()) && !wallet.getKeystores().isEmpty()) {
                     Keystore keystore = wallet.getKeystores().get(0);
-                    keystore.setLabel(importer.getName().replace(" Multisig", ""));
+                    if(Keystore.DEFAULT_LABEL.equals(keystore.getLabel())) {
+                        keystore.setLabel(importer.getName().replace(" Multisig", ""));
+                    }
                     keystore.setSource(KeystoreSource.HW_AIRGAPPED);
                     keystore.setWalletModel(importer.getWalletModel());
                     return keystore;

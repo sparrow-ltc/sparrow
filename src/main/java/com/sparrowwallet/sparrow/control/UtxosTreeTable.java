@@ -6,6 +6,7 @@ import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.TreeTableColumn;
 
+import java.util.Collection;
 import java.util.Comparator;
 
 public class UtxosTreeTable extends CoinTreeTable {
@@ -103,6 +104,8 @@ public class UtxosTreeTable extends CoinTreeTable {
     }
 
     public void updateHistory() {
+        setUnitFormat(getRoot().getValue().getWallet());
+
         //Utxo entries should have already been updated, so only a resort required
         if(!getRoot().getChildren().isEmpty()) {
             sort();
@@ -110,8 +113,8 @@ public class UtxosTreeTable extends CoinTreeTable {
         }
     }
 
-    public void updateLabel(Entry entry) {
+    public void updateLabels(Collection<Entry> entries) {
         Entry rootEntry = getRoot().getValue();
-        rootEntry.updateLabel(entry);
+        rootEntry.updateLabels(entries);
     }
 }

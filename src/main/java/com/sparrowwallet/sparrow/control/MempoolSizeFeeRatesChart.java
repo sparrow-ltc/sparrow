@@ -2,7 +2,7 @@ package com.sparrowwallet.sparrow.control;
 
 import com.sparrowwallet.drongo.OsType;
 import com.sparrowwallet.sparrow.AppServices;
-import com.sparrowwallet.sparrow.Theme;
+import com.sparrowwallet.sparrow.UnitFormat;
 import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.net.MempoolRateSize;
@@ -13,6 +13,8 @@ import javafx.event.EventHandler;
 import javafx.geometry.Insets;
 import javafx.geometry.Point2D;
 import javafx.geometry.Pos;
+import javafx.scene.AccessibleAttribute;
+import javafx.scene.AccessibleRole;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.Scene;
@@ -63,7 +65,7 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
                 }
 
                 scenePane.getStylesheets().add(AppServices.class.getResource("general.css").toExternalForm());
-                if(Config.get().getTheme() == Theme.DARK) {
+                if(AppServices.isDarkTheme()) {
                     scenePane.getStylesheets().add(AppServices.class.getResource("darktheme.css").toExternalForm());
                 }
                 scenePane.getStylesheets().add(AppServices.class.getResource("wallet/wallet.css").toExternalForm());
@@ -88,9 +90,14 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
                 ToggleButton period24 = new ToggleButton("24H");
                 SegmentedButton periodButtons = new SegmentedButton(period2, period24);
                 periodButtons.setToggleGroup(periodGroup);
+                periodButtons.getButtons().forEach(button -> button.setAccessibleRole(AccessibleRole.RADIO_BUTTON));
                 periodGroup.selectedToggleProperty().addListener((observable, oldValue, newValue) -> {
-                    expandedChart.maxPeriodHours = (newValue == period2 ? 2 : 24);
-                    expandedChart.update(AppServices.getMempoolHistogram());
+                    if(newValue == null) {
+                        oldValue.setSelected(true);
+                    } else {
+                        expandedChart.maxPeriodHours = (newValue == period2 ? 2 : 24);
+                        expandedChart.update(AppServices.getMempoolHistogram());
+                    }
                 });
 
                 Optional<Date> optEarliest = AppServices.getMempoolHistogram().keySet().stream().findFirst();
@@ -131,7 +138,17 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
         setOnMouseClicked(expandedChartHandler);
     }
 
+    @Override
+    public Object queryAccessibleAttribute(AccessibleAttribute attribute, Object... parameters) {
+        if(attribute == AccessibleAttribute.CHILDREN) {
+            return FXCollections.emptyObservableList();
+        }
+
+        return super.queryAccessibleAttribute(attribute, parameters);
+    }
+
     public void initialize() {
+        setAccessibleRole(AccessibleRole.TEXT);
         getStyleClass().add("vsizeChart");
         setCreateSymbols(false);
         setCursor(Cursor.CROSSHAIR);
@@ -154,6 +171,7 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
 
         Map<Date, Set<MempoolRateSize>> periodRateSizes = getPeriodRateSizes(mempoolRateSizes);
         Map<Date, String> categories = getCategories(periodRateSizes);
+        setAccessibleText(getSummary(periodRateSizes));
 
         CategoryAxis categoryAxis = (CategoryAxis)getXAxis();
         categoryAxis.setTickMarkVisible(false);
@@ -217,10 +235,11 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
             @Override
             public String toString(Number object) {
                 long vSizeBytes = object.longValue();
+                UnitFormat format = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
                 if(maxMvB > Y_VALUE_BREAK_MVB) {
-                    return (vSizeBytes / (1000 * 1000)) + " MvB";
+                    return format.formatSatsValue(vSizeBytes / (1000 * 1000)) + " MvB";
                 } else {
-                    return (vSizeBytes / (1000)) + " kvB";
+                    return format.formatSatsValue(vSizeBytes / 1000) + " kvB";
                 }
             }
 
@@ -243,6 +262,19 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
         if(expandedChart != null) {
             expandedChart.update(mempoolRateSizes);
         }
+    }
+
+    private String getSummary(Map<Date, Set<MempoolRateSize>> periodRateSizes) {
+        String summary = "Mempool size by fee rate over the last " + maxPeriodHours + " hours";
+        Optional<Set<MempoolRateSize>> latest = periodRateSizes.values().stream().reduce((first, second) -> second);
+        if(latest.isPresent()) {
+            long vSize = latest.get().stream().mapToLong(MempoolRateSize::getVSize).sum();
+            UnitFormat format = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
+            summary += vSize >= 1_000_000 ? ", currently " + format.formatDecimalValue(vSize / 1_000_000d, 1) + " MvB"
+                    : ", currently " + format.formatSatsValue(vSize / 1000) + " kvB";
+        }
+
+        return summary;
     }
 
     private Map<Date, Set<MempoolRateSize>> getPeriodRateSizes(Map<Date, Set<MempoolRateSize>> mempoolRateSizes) {
@@ -303,6 +335,7 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
             title.setStyle("-fx-alignment: center; -fx-font-size: 12px; -fx-padding: 0 0 5 0;");
             getChildren().add(titleBox);
             double maxMvB = getMaxMvB(seriesList);
+            UnitFormat format = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
 
             for(int i = seriesList.size() - 1; i >= 0; i--) {
                 Series<String, Number> series = seriesList.get(i);
@@ -311,7 +344,7 @@ public class MempoolSizeFeeRatesChart extends StackedAreaChart<String, Number> {
                         double kvb = data.getYValue().doubleValue() / 1000;
                         double mvb = kvb / 1000;
                         if(mvb >= 0.01 || (maxMvB < Y_VALUE_BREAK_MVB && mvb > 0.001)) {
-                            String amount = (maxMvB < Y_VALUE_BREAK_MVB ? (int)kvb + " kvB" : String.format("%.2f", mvb) + " MvB");
+                            String amount = (maxMvB < Y_VALUE_BREAK_MVB ? format.formatSatsValue((long)kvb) + " kvB" : format.formatDecimalValue(mvb, 2) + " MvB");
                             Label label = new Label(series.getName() + " lits/vB: " + amount);
                             Glyph circle = new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.CIRCLE);
                             circle.setStyle("-fx-text-fill: VSIZE" + series.getName() + "_COLOR; -fx-opacity: 0.7;");

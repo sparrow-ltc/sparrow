@@ -50,7 +50,7 @@
                 <IdLabel fx:id="id"/>
                 <SegmentedButton>
                     <buttons>
-                        <ToggleButton fx:id="copyTxid" onAction="#copyId">
+                        <ToggleButton accessibleText="Copy Transaction ID" accessibleRole="BUTTON" fx:id="copyTxid" onAction="#copyId">
                             <graphic>
                                 <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="12" icon="COPY" />
                             </graphic>
@@ -58,7 +58,7 @@
                                 <Tooltip text="Copy the transaction id to the clipboard"/>
                             </tooltip>
                         </ToggleButton>
-                        <ToggleButton fx:id="openBlockExplorer" onAction="#openInBlockExplorer">
+                        <ToggleButton accessibleText="Open in Block Explorer" accessibleRole="BUTTON" fx:id="openBlockExplorer" onAction="#openInBlockExplorer">
                             <graphic>
                                 <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="12" icon="UP_RIGHT_FROM_SQUARE" />
                             </graphic>
@@ -111,9 +111,9 @@
                                     <ToggleGroup fx:id="locktimeToggleGroup" />
                                 </toggleGroup>
                                 <buttons>
-                                    <ToggleButton fx:id="locktimeNoneType" text="Disabled" userData="none" toggleGroup="$locktimeToggleGroup" />
-                                    <ToggleButton fx:id="locktimeBlockType" text="Block" userData="block" toggleGroup="$locktimeToggleGroup" />
-                                    <ToggleButton fx:id="locktimeDateType" text="Date" userData="date" toggleGroup="$locktimeToggleGroup" />
+                                    <ToggleButton accessibleRole="RADIO_BUTTON" fx:id="locktimeNoneType" text="Disabled" accessibleText="Locktime: Disabled" userData="none" toggleGroup="$locktimeToggleGroup" />
+                                    <ToggleButton accessibleRole="RADIO_BUTTON" fx:id="locktimeBlockType" text="Block" accessibleText="Locktime: Block" userData="block" toggleGroup="$locktimeToggleGroup" />
+                                    <ToggleButton accessibleRole="RADIO_BUTTON" fx:id="locktimeDateType" text="Date" accessibleText="Locktime: Date" userData="date" toggleGroup="$locktimeToggleGroup" />
                                 </buttons>
                             </SegmentedButton>
                         </Field>
@@ -166,10 +166,10 @@
 
                 <Form GridPane.columnIndex="1" GridPane.rowIndex="2" styleClass="details-lower">
                     <Fieldset text="Fee" inputGrow="SOMETIMES">
-                        <Field text="Amount:">
+                        <Field text="Amount:" accessibleText="Fee amount:">
                             <CopyableCoinLabel fx:id="fee" />
                         </Field>
-                        <Field text="Rate:">
+                        <Field text="Rate:" accessibleText="Fee rate:">
                             <CopyableLabel fx:id="feeRate" />
                         </Field>
                     </Fieldset>
@@ -189,6 +189,14 @@
             <Fieldset text="Blockchain" inputGrow="SOMETIMES">
                 <Field text="Status:">
                     <Label fx:id="blockStatus" contentDisplay="RIGHT" graphicTextGap="5" />
+                    <Label fx:id="unverifiedWarning" text="Unverified" contentDisplay="LEFT" graphicTextGap="5">
+                        <graphic>
+                            <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="12" icon="EXCLAMATION_TRIANGLE" />
+                        </graphic>
+                        <tooltip>
+                            <Tooltip text="The connected server reported this height and would not prove the transaction was included in that block"/>
+                        </tooltip>
+                    </Label>
                 </Field>
                 <Field fx:id="blockHeightField" text="Block Height:">
                     <CopyableLabel fx:id="blockHeight" />
@@ -265,18 +273,18 @@
         <Fieldset text="Signatures" inputGrow="SOMETIMES">
             <VBox>
                 <SignaturesProgressBar fx:id="signaturesProgressBar" />
-                <ProgressBar fx:id="broadcastProgressBar" maxWidth="Infinity" minHeight="50" prefHeight="50" />
+                <ProgressBar fx:id="broadcastProgressBar" accessibleText="Broadcasting transaction" maxWidth="Infinity" minHeight="50" prefHeight="50" />
             </VBox>
             <VBox>
                 <HBox fx:id="signButtonBox" styleClass="signatures-buttons" spacing="20">
                     <SegmentedButton HBox.hgrow="ALWAYS">
                         <buttons>
-                            <ToggleButton HBox.hgrow="ALWAYS" text="Show QR" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#showPSBT">
+                            <ToggleButton accessibleRole="BUTTON" HBox.hgrow="ALWAYS" text="Show QR" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#showPSBT">
                                 <graphic>
                                     <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="20" icon="QRCODE" />
                                 </graphic>
                             </ToggleButton>
-                            <ToggleButton HBox.hgrow="ALWAYS" text="Scan QR" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#scanPSBT">
+                            <ToggleButton accessibleRole="BUTTON" HBox.hgrow="ALWAYS" text="Scan QR" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#scanPSBT">
                                 <graphic>
                                     <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="20" icon="CAMERA" />
                                 </graphic>
@@ -285,12 +293,12 @@
                     </SegmentedButton>
                     <SegmentedButton HBox.hgrow="ALWAYS">
                         <buttons>
-                            <ToggleButton HBox.hgrow="ALWAYS" text="Save Transaction" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#savePSBT">
+                            <ToggleButton accessibleRole="BUTTON" HBox.hgrow="ALWAYS" text="Save Transaction" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#savePSBT">
                                 <graphic>
                                     <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="20" icon="SD_CARD" />
                                 </graphic>
                             </ToggleButton>
-                            <ToggleButton HBox.hgrow="ALWAYS" text="Load Transaction" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#loadPSBT">
+                            <ToggleButton accessibleRole="BUTTON" HBox.hgrow="ALWAYS" text="Load Transaction" contentDisplay="TOP" wrapText="true" textAlignment="CENTER" onAction="#loadPSBT">
                                 <graphic>
                                     <Glyph fontFamily="Font Awesome 5 Free Solid" fontSize="20" icon="ARROW_UP" />
                                 </graphic>

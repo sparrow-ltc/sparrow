@@ -6,6 +6,7 @@ import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.crypto.ChildNumber;
 import com.sparrowwallet.drongo.crypto.ECKey;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.psbt.PSBT;
 import com.sparrowwallet.drongo.psbt.PSBTInput;
@@ -75,6 +76,10 @@ public class CkCardApi extends CardApi {
         return cardStatus;
     }
 
+    void verify() throws CardException {
+        cardProtocol.verify();
+    }
+
     void checkWait(CardStatus cardStatus, IntegerProperty delayProperty, StringProperty messageProperty) throws CardException {
         if(cardStatus.auth_delay != null) {
             int delay = cardStatus.auth_delay.intValue();
@@ -82,9 +87,11 @@ public class CkCardApi extends CardApi {
                 delayProperty.set(delay);
                 messageProperty.set("Auth delay, waiting " + delay + "s...");
                 CardWait cardWait = cardProtocol.authWait();
-                if(cardWait.success) {
-                    delay = cardWait.auth_delay == null ? 0 : cardWait.auth_delay.intValue();
+                if(!cardWait.success) {
+                    throw new CardException("Card did not accept the request to wait out the authentication delay.");
                 }
+
+                delay = cardWait.auth_delay == null ? 0 : cardWait.auth_delay.intValue();
             }
         }
     }
@@ -141,12 +148,12 @@ public class CkCardApi extends CardApi {
     }
 
     @Override
-    public Service<Keystore> getImportService(List<ChildNumber> derivation, StringProperty messageProperty) {
+    public Service<Keystore> getImportService(PolicyType policyType, List<ChildNumber> derivation, StringProperty messageProperty) {
         if(cardType == WalletModel.SATSCHIP) {
-            return new CardImportPane.CardImportService(new Satschip(), cvc, derivation, messageProperty);
+            return new CardImportPane.CardImportService(new Satschip(), policyType, cvc, derivation, messageProperty);
         }
 
-        return new CardImportPane.CardImportService(new Tapsigner(), cvc, derivation, messageProperty);
+        return new CardImportPane.CardImportService(new Tapsigner(), policyType, cvc, derivation, messageProperty);
     }
 
     @Override
@@ -292,6 +299,8 @@ public class CkCardApi extends CardApi {
     }
 
     Address getAddress(int currentSlot, int lastSlot, String addr) throws CardException {
+        cardProtocol.verify();
+
         if(currentSlot == lastSlot) {
             CardDump cardDump = cardProtocol.dump(currentSlot);
             if(!cardDump.sealed) {
@@ -300,7 +309,7 @@ public class CkCardApi extends CardApi {
         }
 
         CardRead cardRead = cardProtocol.read(null, currentSlot);
-        Address address = getDefaultScriptType().getAddress(cardRead.getPubKey());
+        Address address = getDefaultScriptType().getAddress(PolicyType.SINGLE_HD, cardRead.getPubKey());
 
         String left = addr.substring(0, addr.indexOf('_'));
         String right = addr.substring(addr.lastIndexOf('_') + 1);

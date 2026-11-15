@@ -5,7 +5,7 @@ import com.sparrowwallet.drongo.OutputDescriptor;
 import com.sparrowwallet.drongo.SecureString;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.hummingbird.UR;
-import com.sparrowwallet.hummingbird.registry.CryptoOutput;
+import com.sparrowwallet.hummingbird.registry.RegistryItem;
 import com.sparrowwallet.hummingbird.registry.RegistryType;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
@@ -19,6 +19,7 @@ import com.sparrowwallet.sparrow.io.bbqr.BBQRType;
 import javafx.concurrent.Service;
 import javafx.concurrent.Task;
 import javafx.geometry.Pos;
+import javafx.scene.AccessibleRole;
 import javafx.scene.control.Button;
 import javafx.scene.control.Control;
 import javafx.scene.control.ToggleButton;
@@ -32,7 +33,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Optional;
 
-import static com.sparrowwallet.sparrow.wallet.SettingsController.getCryptoOutput;
+import static com.sparrowwallet.sparrow.wallet.SettingsController.getUROutputDescriptor;
 
 public class FileWalletExportPane extends TitledDescriptionPane {
     private final Wallet wallet;
@@ -72,6 +73,7 @@ public class FileWalletExportPane extends TitledDescriptionPane {
 
             SegmentedButton segmentedButton = new SegmentedButton();
             segmentedButton.getButtons().addAll(showButton, fileButton);
+            segmentedButton.getButtons().forEach(button -> button.setAccessibleRole(AccessibleRole.BUTTON));
             return segmentedButton;
         } else if(scannable) {
             Button showButton = new Button("Show...");
@@ -176,9 +178,9 @@ public class FileWalletExportPane extends TitledDescriptionPane {
                     boolean addBbqrOption = exportWallet.getKeystores().stream().anyMatch(keystore -> keystore.getWalletModel().showBbqr());
                     QREncoding encoding = exportWallet.getKeystores().stream().allMatch(keystore -> keystore.getWalletModel().selectBbqr()) ? QREncoding.BBQR : QREncoding.UR;
                     OutputDescriptor outputDescriptor = OutputDescriptor.getOutputDescriptor(exportWallet, KeyPurpose.DEFAULT_PURPOSES, null);
-                    CryptoOutput cryptoOutput = getCryptoOutput(exportWallet);
+                    RegistryItem registryItem = getUROutputDescriptor(exportWallet);
                     BBQR bbqr = addBbqrOption ? new BBQR(BBQRType.UNICODE, outputDescriptor.toString(true).getBytes(StandardCharsets.UTF_8)) : null;
-                    qrDisplayDialog = new DescriptorQRDisplayDialog(exportWallet.getFullDisplayName(), outputDescriptor.toString(true), cryptoOutput.toUR(), bbqr, encoding);
+                    qrDisplayDialog = new DescriptorQRDisplayDialog(exportWallet.getFullDisplayName(), outputDescriptor.toString(true), registryItem.toUR(), bbqr, encoding);
                 } else if(exporter.getClass().equals(ColdcardMultisig.class)) {
                     UR ur = UR.fromBytes(outputStream.toByteArray());
                     BBQR bbqr = new BBQR(BBQRType.UNICODE, outputStream.toByteArray());

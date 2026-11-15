@@ -1,9 +1,9 @@
 plugins {
     id 'application'
-    id 'org-openjfx-javafxplugin'
-    id 'org.beryx.jlink' version '3.2.1'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+    id 'org.beryx.jlink' version '4.0.2'
     id 'org.gradlex.extra-java-module-info' version '1.13.1'
-    id 'io.matthewnelson.kmp.tor.resource-filterjar' version '408.21.0'
+    id 'io.matthewnelson.kmp.tor.resource-filterjar' version '409.5.0'
 }
 
 def os = org.gradle.internal.os.OperatingSystem.current()
@@ -18,9 +18,10 @@ if(System.getProperty("os.arch") == "aarch64") {
     releaseArch = "aarch64"
 }
 def headless = "true".equals(System.getProperty("java.awt.headless"))
+def skipInstallers = "true".equals(findProperty("skipInstallers"))
 
 group = 'com.sparrowwallet'
-version = '2.4.3'
+version = '2.5.7'
 
 repositories {
     mavenCentral()
@@ -32,7 +33,7 @@ tasks.withType(AbstractArchiveTask).configureEach {
 }
 
 javafx {
-    version = headless ? "18" : "25.0.2"
+    version = "27.0.1"
     modules = [ 'javafx.controls', 'javafx.fxml', 'javafx.swing', 'javafx.graphics' ]
 }
 
@@ -60,7 +61,7 @@ dependencies {
     implementation('org.jdbi:jdbi3-sqlobject:3.51.0') {
         exclude group: 'org.slf4j'
     }
-    implementation('org.flywaydb:flyway-core:9.22.3')
+    implementation('org.flywaydb:flyway-core:13.12.1')
     implementation('org.fxmisc.richtext:richtextfx:0.11.7')
     implementation('no.tornado:tornadofx-controls:1.0.4')
     implementation('com.google.zxing:javase:3.5.4') {
@@ -74,12 +75,12 @@ dependencies {
     implementation('com.github.arteam:simple-json-rpc-server:1.3') {
         exclude group: 'org.slf4j'
     }
-    implementation('com.fasterxml.jackson.core:jackson-databind:2.21.1')
-    implementation('com.sparrowwallet:hummingbird:1.7.4')
+    implementation('com.fasterxml.jackson.core:jackson-databind:2.21.8')
+    implementation('com.sparrowwallet:hummingbird:1.7.6')
     implementation('co.nstant.in:cbor:0.9')
-    implementation('org.openpnp:openpnp-capture-java:0.0.30-1')
+    implementation('io.github.doblon8:openpnp-capture-java:0.0.4')
     implementation("io.matthewnelson.kmp-tor:runtime:2.5.0")
-    implementation("io.matthewnelson.kmp-tor:resource-exec-tor-gpl:408.21.0")
+    implementation("io.matthewnelson.kmp-tor:resource-exec-tor-gpl:409.5.0")
     implementation('org.jetbrains.kotlinx:kotlinx-coroutines-javafx:1.10.2') {
         exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-common'
     }
@@ -102,18 +103,18 @@ dependencies {
         exclude group: 'org.slf4j'
     }
     implementation('com.sparrowwallet.bokmakierie:bokmakierie:1.0')
-    implementation('com.sparrowwallet:tern:1.0.6')
+    implementation('com.sparrowwallet:tern:1.1.2')
     implementation('io.reactivex.rxjava2:rxjava:2.2.21')
     implementation('io.reactivex.rxjava2:rxjavafx:2.2.2')
     implementation('org.apache.commons:commons-lang3:3.20.0')
     implementation('org.apache.commons:commons-compress:1.28.0')
     implementation('com.github.librepdf:openpdf:1.3.43')
-    implementation('com.googlecode.lanterna:lanterna:3.1.3')
+    implementation('com.googlecode.lanterna:lanterna:3.1.5')
     implementation('net.coobird:thumbnailator:0.4.21')
     implementation('com.github.hervegirod:fxsvgimage:1.1')
     implementation('com.sparrowwallet:toucan:0.9.0')
     implementation('com.jcraft:jzlib:1.1.3')
-    implementation('io.github.doblon8:jzbar:0.3.1')
+    implementation('io.github.doblon8:jzbar:0.5.0')
     testImplementation('org.junit.jupiter:junit-jupiter-api:5.14.1')
     testRuntimeOnly('org.junit.jupiter:junit-jupiter-engine:5.14.1')
     testRuntimeOnly('org.junit.platform:junit-platform-launcher')
@@ -129,8 +130,28 @@ compileJava {
 }
 
 test {
-    useJUnitPlatform()
-    jvmArgs = ["--add-opens=java.base/java.io=ALL-UNNAMED", "--enable-native-access=ALL-UNNAMED"]
+    useJUnitPlatform {
+        //Checkpoint verification needs the network and checks compiled in data rather than code, so it is a release checklist step
+        excludeTags 'checkpoint'
+    }
+    jvmArgs = ["--enable-native-access=ALL-UNNAMED"]
+    systemProperty 'sparrow.home', layout.buildDirectory.dir('test-home').get().asFile.absolutePath
+}
+
+tasks.register('verifyCheckpoint', Test) {
+    description = 'Verifies the compiled in header checkpoints against live public Electrum servers'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'checkpoint'
+    }
+    jvmArgs = ["--enable-native-access=ALL-UNNAMED"]
+    outputs.upToDateWhen { false }
+    testLogging {
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
 }
 
 application {
@@ -144,6 +165,7 @@ application {
                                  "--enable-native-access=com.fazecast.jSerialComm",
                                  "--enable-native-access=org.usb4java",
                                  "--enable-native-access=io.github.doblon8.jzbar",
+                                 "--enable-native-access=io.github.doblon8.openpnp.capture",
                                  "--add-opens=javafx.graphics/com.sun.javafx.css=org.controlsfx.controls",
                                  "--add-opens=javafx.graphics/javafx.scene=org.controlsfx.controls",
                                  "--add-opens=javafx.controls/com.sun.javafx.scene.control.behavior=org.controlsfx.controls",
@@ -157,17 +179,20 @@ application {
                                  "--add-opens=javafx.graphics/com.sun.javafx.application=com.sparrowwallet.sparrow",
                                  "--add-opens=javafx.graphics/javafx.scene.input=com.sparrowwallet.sparrow",
                                  "--add-opens=java.base/java.net=com.sparrowwallet.sparrow",
-                                 "--add-opens=java.base/java.io=com.google.gson",
                                  "--add-opens=java.smartcardio/sun.security.smartcardio=com.sparrowwallet.sparrow",
-                                 "--add-reads=kotlin.stdlib=kotlinx.coroutines.core",
-                                 "--add-reads=org.flywaydb.core=java.desktop"]
+                                 "--add-reads=kotlin.stdlib=kotlinx.coroutines.core"]
 
     if(os.macOsX) {
-        applicationDefaultJvmArgs += ["-Dprism.lcdtext=false", "-Xdock:name=Sparrow-LTC"]
+        applicationDefaultJvmArgs += ["-Dprism.lcdtext=false", "-Dprism.maxTextureSize=8192", "-Xdock:name=Sparrow-LTC"]
     }
     if(headless) {
-        applicationDefaultJvmArgs += ["-Dglass.platform=Monocle", "-Dmonocle.platform=Headless", "-Dprism.order=sw"]
+        applicationDefaultJvmArgs += ["-Dglass.platform=Headless"]
     }
+}
+
+run {
+    //Add jdk.unsupported for IDE agents requiring sun.misc
+    jvmArgs += ["--add-modules=jdk.unsupported"]
 }
 
 jlink {
@@ -183,7 +208,6 @@ jlink {
         requires 'com.google.common'
         requires 'io.leangen.geantyref'
         requires 'static jdk.jfr'
-        uses 'org.eclipse.jetty.http.HttpFieldPreEncoder'
         uses 'io.grpc.LoadBalancerProvider'
         uses 'io.grpc.ManagedChannelProvider'
         uses 'io.grpc.NameResolverProvider'
@@ -219,10 +243,8 @@ jlink {
                    'glob:/org.hid4java/darwin-*/**,' +
                    'glob:/org.hid4java/linux-*/**,' +
                    'glob:/org.hid4java/win32-*/**,' +
-                   'glob:/openpnp.capture.java/darwin-*/**,' +
-                   'glob:/openpnp.capture.java/linux-*/**,' +
-                   'glob:/openpnp.capture.java/win32-*/**,' +
-                   'glob:/io.github.doblon8.jzbar/native/**']
+                   'glob:/io.github.doblon8.jzbar/native/**,' +
+                   'glob:/io.github.doblon8.openpnp.capture/native/**']
     launcher {
         name = 'sparrow'
         jvmArgs = ["--enable-native-access=com.sparrowwallet.drongo",
@@ -232,6 +254,7 @@ jlink {
                    "--enable-native-access=com.fazecast.jSerialComm",
                    "--enable-native-access=org.usb4java",
                    "--enable-native-access=io.github.doblon8.jzbar",
+                   "--enable-native-access=io.github.doblon8.openpnp.capture",
                    "--enable-native-access=com.sparrowwallet.sparrow",
                    "--add-opens=javafx.graphics/com.sun.javafx.css=org.controlsfx.controls",
                    "--add-opens=javafx.graphics/javafx.scene=org.controlsfx.controls",
@@ -246,7 +269,6 @@ jlink {
                    "--add-opens=javafx.graphics/javafx.scene.input=com.sparrowwallet.sparrow",
                    "--add-opens=javafx.graphics/com.sun.javafx.application=com.sparrowwallet.sparrow",
                    "--add-opens=java.base/java.net=com.sparrowwallet.sparrow",
-                   "--add-opens=java.base/java.io=com.google.gson",
                    "--add-opens=java.smartcardio/sun.security.smartcardio=com.sparrowwallet.sparrow",
                    "--add-reads=com.sparrowwallet.merged.module=java.desktop",
                    "--add-reads=com.sparrowwallet.merged.module=java.sql",
@@ -261,17 +283,16 @@ jlink {
                    "--add-reads=com.sparrowwallet.merged.module=org.bouncycastle.provider",
                    "--add-reads=com.sparrowwallet.merged.module=kotlin.stdlib",
                    "--add-reads=com.sparrowwallet.merged.module=org.reactfx.reactfx",
-                   "--add-reads=kotlin.stdlib=kotlinx.coroutines.core",
-                   "--add-reads=org.flywaydb.core=java.desktop"]
+                   "--add-reads=kotlin.stdlib=kotlinx.coroutines.core"]
 
         if(os.windows) {
-            jvmArgs += ["-Djavax.accessibility.assistive_technologies", "-Djavax.accessibility.screen_magnifier_present=false"]
+            jvmArgs.addAll(["-Djavax.accessibility.assistive_technologies", "-Djavax.accessibility.screen_magnifier_present=false"])
         }
         if(os.macOsX) {
-            jvmArgs += ["-Dprism.lcdtext=false", "--add-opens=javafx.graphics/com.sun.glass.ui.mac=com.sparrowwallet.merged.module"]
+            jvmArgs.addAll(["-Dprism.lcdtext=false", "-Dprism.maxTextureSize=8192", "--add-opens=javafx.graphics/com.sun.glass.ui.mac=com.sparrowwallet.merged.module"])
         }
         if(headless) {
-            jvmArgs += ["-Dglass.platform=Monocle", "-Dmonocle.platform=Headless", "-Dprism.order=sw"]
+            jvmArgs.addAll(["-Dglass.platform=Headless"])
         }
     }
     addExtraDependencies("javafx")
@@ -279,12 +300,12 @@ jlink {
         imageName = "Sparrow-LTC"
         installerName = "Sparrow-LTC"
         appVersion = "${version}"
-        skipInstaller = os.macOsX || properties.skipInstallers
+        skipInstaller = os.macOsX || skipInstallers
         imageOptions = []
         installerOptions = ['--file-associations', 'src/main/deploy/psbt.properties', '--file-associations', 'src/main/deploy/txn.properties', '--file-associations', 'src/main/deploy/asc.properties', '--license-file', 'LICENSE']
         if(os.windows) {
-            installerOptions += ['--win-per-user-install', '--win-dir-chooser', '--win-menu', '--win-menu-group', 'Sparrow-LTC', '--win-shortcut', '--resource-dir', 'src/main/deploy/package/windows/']
-            imageOptions += ['--icon', 'src/main/deploy/package/windows/sparrow.ico']
+            installerOptions.addAll(['--win-per-user-install', '--win-menu', '--win-menu-group', 'Sparrow-LTC', '--win-shortcut', '--resource-dir', 'src/main/deploy/package/windows/'])
+            imageOptions.addAll(['--icon', 'src/main/deploy/package/windows/sparrow.ico'])
             installerType = "msi"
         }
         if(os.linux) {
@@ -293,20 +314,65 @@ jlink {
                 installerOptions = ['--license-file', 'LICENSE']
             } else {
                 installerName = "sparrowltcwallet"
-                installerOptions += ['--linux-shortcut', '--linux-menu-group', 'Sparrow-LTC']
+                installerOptions.addAll(['--linux-shortcut', '--linux-menu-group', 'Sparrow-LTC'])
             }
-            installerOptions += ['--resource-dir', layout.buildDirectory.dir('deploy/package').get().asFile.toString(), '--linux-app-category', 'utils', '--linux-app-release', '1', '--linux-rpm-license-type', 'ASL 2.0', '--linux-deb-maintainer', 'mail@sparrowwallet.com']
-            imageOptions += ['--icon', 'src/main/deploy/package/linux/Sparrow-LTC.png', '--resource-dir', 'src/main/deploy/package/linux/']
+            installerOptions.addAll(['--resource-dir', layout.buildDirectory.dir('deploy/package').get().asFile.toString(), '--linux-app-category', 'utils', '--linux-app-release', '1', '--linux-rpm-license-type', 'ASL 2.0', '--linux-deb-maintainer', 'mail@sparrowwallet.com'])
+            imageOptions.addAll(['--icon', 'src/main/deploy/package/linux/Sparrow-LTC.png', '--resource-dir', 'src/main/deploy/package/linux/'])
         }
         if(os.macOsX) {
-            installerOptions += ['--mac-sign', '--mac-signing-key-user-name', 'Craig Raw (UPLVMSK9D7)']
-            imageOptions += ['--icon', 'src/main/deploy/package/macos/sparrow-ltc.icns', '--resource-dir', 'src/main/deploy/package/macos/']
+            installerOptions.addAll(['--mac-sign', '--mac-signing-key-user-name', 'Craig Raw (UPLVMSK9D7)'])
+            imageOptions.addAll(['--icon', 'src/main/deploy/package/macos/sparrow-ltc.icns', '--resource-dir', 'src/main/deploy/package/macos/'])
             installerType = "dmg"
         }
     }
     if(os.linux) {
         jpackageImage {
             dependsOn('prepareModulesDir', 'copyUdevRules')
+        }
+    }
+}
+
+if(os.macOsX) {
+    tasks.jpackageImage.finalizedBy('patchLauncherUuid')
+    tasks.jpackage.dependsOn('patchLauncherUuid')
+}
+
+// Give the launcher a Sparrow LC_UUID, since the stock jpackage launcher shares its Mach-O UUID with every app packaged by the same JDK
+tasks.register('patchLauncherUuid') {
+    dependsOn tasks.jpackageImage
+    def appDir = layout.buildDirectory.dir('jpackage/Sparrow.app').get().asFile
+    def launcherUuid = UUID.nameUUIDFromBytes("com.sparrowwallet.sparrow.${osArch}".getBytes('UTF-8'))
+    doLast {
+        def launcher = new File(appDir, 'Contents/MacOS/Sparrow')
+        byte[] bytes = launcher.bytes
+        def buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        if(Integer.toUnsignedLong(buffer.getInt(0)) != 0xfeedfacfL) {
+            throw new GradleException("Launcher ${launcher} is not a thin 64-bit Mach-O binary")
+        }
+
+        int ncmds = buffer.getInt(16)
+        int offset = 32
+        int uuidOffset = -1
+        for(int i = 0; i < ncmds && uuidOffset < 0; i++) {
+            if(buffer.getInt(offset) == 0x1b) {
+                uuidOffset = offset + 8
+            } else {
+                offset += buffer.getInt(offset + 4)
+            }
+        }
+        if(uuidOffset < 0) {
+            throw new GradleException("Launcher ${launcher} has no LC_UUID load command")
+        }
+
+        buffer.order(java.nio.ByteOrder.BIG_ENDIAN)
+        buffer.putLong(uuidOffset, launcherUuid.mostSignificantBits)
+        buffer.putLong(uuidOffset + 8, launcherUuid.leastSignificantBits)
+        launcher.bytes = bytes
+
+        //Patching invalidates the ad hoc signature applied by jpackage, so re-sign
+        def codesign = new ProcessBuilder('codesign', '--force', '--sign', '-', appDir.path).inheritIO().start()
+        if(codesign.waitFor() != 0) {
+            throw new GradleException("Ad hoc signing ${appDir} failed")
         }
     }
 }
@@ -411,23 +477,25 @@ def serialArch = osArch == "aarch64" ? "aarch64" : "x86_64"
 
 // Map of JAR name prefix to the include glob for platform-specific natives inside the JAR.
 def nativeLibJars = [
-        'jna-'                : "com/sun/jna/${jnaPlatform}/*",
-        'argon2-jvm-2'        : "${jnaPlatform}/*",
-        'hid4java-'           : "${jnaPlatform}/*",
-        'openpnp-capture-java': "${jnaPlatform}/*",
-        'jSerialComm-'        : "${serialOs}/${serialArch}/*",
-        'usb4java-'           : "org/usb4java/${jnaPlatform}/*",
-        'jzbar-'              : "native/${osName}/${osArch}/*",
+        'jna-'                 : "com/sun/jna/${jnaPlatform}/*",
+        'argon2-jvm-2'         : "${jnaPlatform}/*",
+        'hid4java-'            : "${jnaPlatform}/*",
+        'jSerialComm-'         : "${serialOs}/${serialArch}/*",
+        'usb4java-'            : "org/usb4java/${jnaPlatform}/*",
+        'jzbar-'               : "native/${osName}/${osArch}/*",
+        'openpnp-capture-java-': "native/${osName}/${osArch}/*",
 ]
 
 tasks.register('extractNativeLibraries') {
     dependsOn 'jlink'
+    inputs.files(configurations.runtimeClasspath)
+    def drongoNativeDir = "${project(':drongo').projectDir}/src/main/resources/native/${osName}/${osArch}"
     doLast {
         def imageLib = file("$buildDir/image/lib")
 
         // Project-owned natives
         copy {
-            from "${project(':drongo').projectDir}/src/main/resources/native/${osName}/${osArch}", "src/main/resources/native/${osName}/${osArch}", "src/main/resources/${jnaPlatform}"
+            from drongoNativeDir, "src/main/resources/native/${osName}/${osArch}", "src/main/resources/${jnaPlatform}"
             into imageLib
             eachFile { it.permissions { unix('rw-r--r--') } }
         }
@@ -468,6 +536,7 @@ tasks.register('extractNativeLibraries') {
 extraJavaModuleInfo {
     module('no.tornado:tornadofx-controls', 'tornadofx.controls') {
         exports('tornadofx.control')
+        exports('tornadofx.control.skin')
         requires('javafx.controls')
     }
     module('com.github.arteam:simple-json-rpc-core', 'simple.json.rpc.core') {
@@ -492,12 +561,6 @@ extraJavaModuleInfo {
         requires('com.google.common')
         requires('org.slf4j')
         requires('com.fasterxml.jackson.databind')
-    }
-    module('org.openpnp:openpnp-capture-java', 'openpnp.capture.java') {
-        exports('org.openpnp.capture')
-        exports('org.openpnp.capture.library')
-        requires('java.desktop')
-        requires('com.sun.jna')
     }
     module('net.sourceforge.javacsv:javacsv', 'net.sourceforge.javacsv') {
         exports('com.csvreader')

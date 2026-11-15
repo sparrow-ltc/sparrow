@@ -1,10 +1,10 @@
 package com.sparrowwallet.sparrow.terminal.wallet;
 
-import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.gui2.*;
 import com.googlecode.lanterna.gui2.dialogs.*;
 import com.sparrowwallet.drongo.SecureString;
 import com.sparrowwallet.drongo.crypto.InvalidPasswordException;
+import com.sparrowwallet.drongo.wallet.InvalidWalletException;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.SparrowWallet;
@@ -68,13 +68,15 @@ public class LoadWallet implements Runnable {
                 }
 
                 Platform.runLater(() -> {
-                    Storage.LoadWalletService loadWalletService = new Storage.LoadWalletService(storage, new SecureString(password));
+                    SecureString securePassword = new SecureString(password);
+                    Storage.LoadWalletService loadWalletService = new Storage.LoadWalletService(storage, securePassword);
                     loadWalletService.setOnSucceeded(workerStateEvent -> {
                         EventManager.get().post(new StorageEvent(storage.getWalletId(null), TimedEvent.Action.END, "Done"));
                         WalletAndKey walletAndKey = loadWalletService.getValue();
                         openWallet(storage, walletAndKey);
                     });
                     loadWalletService.setOnFailed(workerStateEvent -> {
+                        securePassword.clear();
                         EventManager.get().post(new StorageEvent(storage.getWalletId(null), TimedEvent.Action.END, "Failed"));
                         SparrowTerminal.get().getGuiThread().invokeLater(() -> SparrowTerminal.get().getGui().removeWindow(loadingDialog));
                         Throwable exception = loadWalletService.getException();
@@ -94,7 +96,8 @@ public class LoadWallet implements Runnable {
                 });
             }
         } catch(Exception e) {
-            if(e instanceof IOException && e.getMessage().startsWith("The process cannot access the file because another process has locked")) {
+            SparrowTerminal.get().getGuiThread().invokeLater(() -> SparrowTerminal.get().getGui().removeWindow(loadingDialog));
+            if(e instanceof IOException && e.getMessage() != null && e.getMessage().startsWith("The process cannot access the file because another process has locked")) {
                 showErrorDialog("Error Opening Wallet", "The wallet file is locked. Is another instance of " + SparrowWallet.APP_NAME + " already running?");
             } else {
                 log.error("Error opening wallet", e);
@@ -106,8 +109,10 @@ public class LoadWallet implements Runnable {
     private void openWallet(Storage storage, WalletAndKey walletAndKey) {
         try {
             storage.restorePublicKeysFromSeed(walletAndKey.getWallet(), walletAndKey.getKey());
-            if(!walletAndKey.getWallet().isValid()) {
-                throw new IllegalStateException("Wallet file is not valid.");
+            try {
+                walletAndKey.getWallet().checkWallet();
+            } catch(InvalidWalletException e) {
+                throw new IllegalStateException("Wallet file is not valid: " + e.getMessage());
             }
             SparrowTerminal.addWallet(storage, walletAndKey.getWallet());
             for(Map.Entry<WalletAndKey, Storage> entry : walletAndKey.getChildWallets().entrySet()) {

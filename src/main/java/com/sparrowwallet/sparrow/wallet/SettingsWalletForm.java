@@ -10,6 +10,7 @@ import com.sparrowwallet.sparrow.EventManager;
 import com.sparrowwallet.sparrow.event.*;
 import com.sparrowwallet.sparrow.io.Storage;
 import com.sparrowwallet.sparrow.io.StorageException;
+import javafx.beans.property.BooleanProperty;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -29,6 +30,7 @@ public class SettingsWalletForm extends WalletForm {
         this.walletCopy = currentWallet.copy();
         this.walletCopy.setMasterWallet(walletCopy.isMasterWallet() ? null : walletCopy.getMasterWallet().copy());
         this.appWalletForm = appWalletForm;
+        disposeRefreshNodes();
     }
 
     @Override
@@ -43,6 +45,21 @@ public class SettingsWalletForm extends WalletForm {
 
     public WalletForm getAppWalletForm() {
         return appWalletForm;
+    }
+
+    @Override
+    public boolean isLocked() {
+        return appWalletForm.isLocked();
+    }
+
+    @Override
+    public BooleanProperty lockedProperty() {
+        return appWalletForm.lockedProperty();
+    }
+
+    @Override
+    public void setLocked(boolean locked) {
+        appWalletForm.setLocked(locked);
     }
 
     @Override
@@ -195,6 +212,10 @@ public class SettingsWalletForm extends WalletForm {
             }
 
             if(!Objects.equals(originalKeystore.getExtendedPublicKey(), changedKeystore.getExtendedPublicKey())) {
+                return true;
+            }
+
+            if(!Objects.equals(originalKeystore.getSilentPaymentScanAddress(), changedKeystore.getSilentPaymentScanAddress())) {
                 return true;
             }
         }

@@ -2,6 +2,7 @@ package com.sparrowwallet.sparrow.net;
 
 import com.google.common.net.HostAndPort;
 import com.sparrowwallet.drongo.Network;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.sparrow.io.Server;
 
 import java.util.Arrays;
@@ -24,14 +25,20 @@ public enum PublicElectrumServer {
     TESTNET_XURIOUS_COM("electrum.ltc.xurious.com", "ssl://electrum.ltc.xurious.com:51002", Network.TESTNET);
 
     PublicElectrumServer(String name, String url, Network network) {
+        this(name, url, network, List.of(PolicyType.SINGLE_HD, PolicyType.MULTI_HD));
+    }
+
+    PublicElectrumServer(String name, String url, Network network, List<PolicyType> supportedPolicyTypes) {
         this.server = new Server(url, name);
         this.network = network;
+        this.supportedPolicyTypes = supportedPolicyTypes;
     }
 
     public static final List<Network> SUPPORTED_NETWORKS = List.of(Network.MAINNET, Network.TESTNET, Network.SIGNET, Network.TESTNET4);
 
     private final Server server;
     private final Network network;
+    private final List<PolicyType> supportedPolicyTypes;
 
     public Server getServer() {
         return server;
@@ -43,6 +50,14 @@ public enum PublicElectrumServer {
 
     public Network getNetwork() {
         return network;
+    }
+
+    public boolean isSupportedPolicyType(PolicyType policyType) {
+        return supportedPolicyTypes.contains(policyType);
+    }
+
+    public boolean supportsAllPolicyTypes(List<PolicyType> policyTypes) {
+        return policyTypes.stream().allMatch(this::isSupportedPolicyType);
     }
 
     public static List<PublicElectrumServer> getServers() {

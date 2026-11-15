@@ -8,10 +8,8 @@ import com.sparrowwallet.drongo.protocol.TransactionOutput;
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
-import com.sparrowwallet.sparrow.WalletTabData;
 import com.sparrowwallet.sparrow.event.WalletBlockHeightChangedEvent;
 import com.sparrowwallet.sparrow.event.WalletEntryLabelsChangedEvent;
-import com.sparrowwallet.sparrow.event.WalletTabsClosedEvent;
 import com.sparrowwallet.sparrow.net.MempoolRateSize;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.IntegerPropertyBase;
@@ -50,10 +48,6 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
                 return "confirmations";
             }
         };
-
-        if(isFullyConfirming()) {
-            EventManager.get().register(this);
-        }
     }
 
     public BlockTransaction getBlockTransaction() {
@@ -106,6 +100,8 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
     }
 
     public boolean isComplete(Map<HashIndex, BlockTransactionHashIndex> walletTxos) {
+        Set<HashIndex> inputChildren = getChildHashIndexes(HashIndexEntry.Type.INPUT);
+        Set<HashIndex> outputChildren = getChildHashIndexes(HashIndexEntry.Type.OUTPUT);
         int validEntries = 0;
         for(TransactionInput txInput : blockTransaction.getTransaction().getInputs()) {
             BlockTransactionHashIndex ref = walletTxos.get(new HashIndex(txInput.getOutpoint().getHash(), txInput.getOutpoint().getIndex()));
@@ -113,7 +109,7 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
                 validEntries++;
                 if(!ref.isSpent()) {
                     log.warn("TransactionEntry " + blockTransaction.getHash() + " for wallet " + getWallet().getFullName() + " missing spending reference on output " + ref);
-                } else if(getChildren().stream().noneMatch(entry -> ((HashIndexEntry)entry).getHashIndex().toString().equals(ref.getSpentBy().toString()) && ((HashIndexEntry)entry).getType().equals(HashIndexEntry.Type.INPUT))) {
+                } else if(!inputChildren.contains(new HashIndex(ref.getSpentBy().getHash(), ref.getSpentBy().getIndex()))) {
                     log.warn("TransactionEntry " + blockTransaction.getHash() + " for wallet " + getWallet().getFullName() + " missing child for input " + ref.getSpentBy() + " on output " + ref);
                     return false;
                 }
@@ -123,7 +119,7 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
             BlockTransactionHashIndex ref = walletTxos.get(new HashIndex(txOutput.getHash(), txOutput.getIndex()));
             if(ref != null) {
                 validEntries++;
-                if(getChildren().stream().noneMatch(entry -> ((HashIndexEntry)entry).getHashIndex().toString().equals(ref.toString()) && ((HashIndexEntry)entry).getType().equals(HashIndexEntry.Type.OUTPUT))) {
+                if(!outputChildren.contains(new HashIndex(ref.getHash(), ref.getIndex()))) {
                     log.warn("TransactionEntry " + blockTransaction.getHash() + " for wallet " + getWallet().getFullName() + " missing child for output " + ref);
                     return false;
                 }
@@ -136,6 +132,11 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
         }
 
         return true;
+    }
+
+    private Set<HashIndex> getChildHashIndexes(HashIndexEntry.Type type) {
+        return getChildren().stream().map(HashIndexEntry.class::cast).filter(entry -> entry.getType() == type)
+                .map(entry -> new HashIndex(entry.getHashIndex().getHash(), entry.getHashIndex().getIndex())).collect(Collectors.toSet());
     }
 
     private static List<Entry> createChildEntries(Wallet wallet, Map<BlockTransactionHashIndex, KeyPurpose> incoming, Map<BlockTransactionHashIndex, KeyPurpose> outgoing) {
@@ -183,10 +184,7 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
     public int compareTo(TransactionEntry other) {
         //This comparison must be identical to that of WalletTransactionsEntry.WalletTransaction
         if(blockTransaction.getHeight() != other.blockTransaction.getHeight()) {
-            int blockOrder = blockTransaction.getComparisonHeight() - other.blockTransaction.getComparisonHeight();
-            if(blockOrder != 0) {
-                return blockOrder;
-            }
+            return blockTransaction.compareHeight(other.blockTransaction);
         }
 
         int valueOrder = Long.compare(other.getValue(), getValue());
@@ -249,12 +247,33 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
 
     public Long getVSizeFromTip() {
         if(!AppServices.getMempoolHistogram().isEmpty()) {
+            Double feeRate = blockTransaction.getFeeRate();
+            if(feeRate == null) {
+                return null;
+            }
             Set<MempoolRateSize> rateSizes = AppServices.getMempoolHistogram().get(AppServices.getMempoolHistogram().lastKey());
-            double feeRate = blockTransaction.getFeeRate();
             return rateSizes.stream().filter(rateSize -> rateSize.getFee() > feeRate).mapToLong(MempoolRateSize::getVSize).sum();
         }
 
         return null;
+    }
+
+    /**
+     * Only an entry held in a wallet's transactions model is shown, so only that entry follows the chain tip. Entries built to carry a label change, or
+     * built during a refresh and then found to match one already held, are never registered.
+     */
+    public void registerForConfirmations() {
+        if(isFullyConfirming()) {
+            EventManager.get().register(this);
+        }
+    }
+
+    public void unregisterForConfirmations() {
+        try {
+            EventManager.get().unregister(this);
+        } catch(IllegalArgumentException e) {
+            //Already unregistered once fully confirmed, or never registered because it was fully confirmed when adopted
+        }
     }
 
     @Subscribe
@@ -264,19 +283,6 @@ public class TransactionEntry extends Entry implements Comparable<TransactionEnt
 
             if(!isFullyConfirming()) {
                 EventManager.get().unregister(this);
-            }
-        }
-    }
-
-    @Subscribe
-    public void walletTabsClosed(WalletTabsClosedEvent event) {
-        for(WalletTabData tabData : event.getClosedWalletTabData()) {
-            if(tabData.getWalletForm().getWallet() == getWallet()) {
-                try {
-                    EventManager.get().unregister(this);
-                } catch(IllegalArgumentException e) {
-                    //Safe to ignore
-                }
             }
         }
     }

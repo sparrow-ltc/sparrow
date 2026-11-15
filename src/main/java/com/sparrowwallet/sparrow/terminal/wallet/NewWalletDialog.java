@@ -7,6 +7,7 @@ import com.sparrowwallet.drongo.SecureString;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.crypto.EncryptionType;
 import com.sparrowwallet.drongo.crypto.Key;
+import com.sparrowwallet.drongo.wallet.InvalidWalletException;
 import com.sparrowwallet.drongo.wallet.MnemonicException;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.sparrow.AppServices;
@@ -46,8 +47,9 @@ public abstract class NewWalletDialog extends DialogWindow {
 
         try {
             discoverAndSaveWallet(getWallets());
-        } catch(ImportException e) {
+        } catch(Exception e) {
             log.error("Cannot import wallet", e);
+            showErrorDialog("Error Creating Wallet", e.getMessage());
         }
     }
 
@@ -72,6 +74,15 @@ public abstract class NewWalletDialog extends DialogWindow {
     protected void discoverAndSaveWallet(List<Wallet> wallets) {
         if(wallets.isEmpty()) {
             return;
+        }
+
+        for(Wallet wallet : wallets) {
+            try {
+                wallet.checkWallet();
+            } catch(InvalidWalletException e) {
+                showErrorDialog("Error Creating Wallet", "The wallet is not valid: " + e.getMessage());
+                return;
+            }
         }
 
         if(AppServices.onlineProperty().get()) {
@@ -139,6 +150,8 @@ public abstract class NewWalletDialog extends DialogWindow {
                         });
                     } catch(IOException | StorageException | MnemonicException e) {
                         log.error("Error saving imported wallet", e);
+                        SparrowTerminal.get().getGuiThread().invokeLater(() -> SparrowTerminal.get().getGui().removeWindow(savingDialog));
+                        showErrorDialog("Error Saving Wallet", e.getMessage());
                     }
                 } else {
                     Storage.KeyDerivationService keyDerivationService = new Storage.KeyDerivationService(storage, new SecureString(password));
@@ -171,8 +184,9 @@ public abstract class NewWalletDialog extends DialogWindow {
                             });
                         } catch(IOException | StorageException | MnemonicException e) {
                             log.error("Error saving imported wallet", e);
+                            SparrowTerminal.get().getGuiThread().invokeLater(() -> SparrowTerminal.get().getGui().removeWindow(savingDialog));
+                            showErrorDialog("Error Saving Wallet", e.getMessage());
                         } finally {
-                            encryptionFullKey.clear();
                             if(key != null) {
                                 key.clear();
                             }

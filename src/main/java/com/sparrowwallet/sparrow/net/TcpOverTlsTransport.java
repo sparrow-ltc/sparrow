@@ -14,10 +14,15 @@ import java.net.InetSocketAddress;
 import java.security.*;
 import java.security.cert.*;
 import java.security.cert.Certificate;
+import java.util.Collection;
+import java.util.Date;
+import java.util.List;
 
 public class TcpOverTlsTransport extends TcpTransport {
     private static final Logger log = LoggerFactory.getLogger(TcpOverTlsTransport.class);
     public static final int PAD_TO_MULTIPLE_OF_BYTES = 96;
+    private static final int GENERAL_NAME_DNS = 2;
+    private static final int GENERAL_NAME_IP_ADDRESS = 7;
 
     protected final SSLSocketFactory sslSocketFactory;
     protected final boolean usingCaTrust;
@@ -112,9 +117,9 @@ public class TcpOverTlsTransport extends TcpTransport {
                     return getTrustManagers(null, host);
                 }
                 //Allow expired certificates for private servers where users may not have the expertise to renew
-            } catch(CertificateException e) {
-                crtFile.delete();
-                return getTrustManagers(null, host);
+            } catch(CertificateNotYetValidException e) {
+                //A certificate that was valid when saved or configured can only appear to be not yet valid if the system clock is incorrect - retain it
+                log.warn("Certificate for " + host + " at " + crtFile.getAbsolutePath() + " is not yet valid, check the system clock is correct");
             }
         }
 
@@ -126,6 +131,21 @@ public class TcpOverTlsTransport extends TcpTransport {
         trustManagerFactory.init(keyStore);
 
         return trustManagerFactory.getTrustManagers();
+    }
+
+    /**
+     * Returns the expiry date of the certificate in the given file if it has expired, otherwise null.
+     */
+    public static Date getExpiredAt(File crtFile) {
+        try(FileInputStream fis = new FileInputStream(crtFile)) {
+            if(CertificateFactory.getInstance("X.509").generateCertificate(fis) instanceof X509Certificate x509Certificate && x509Certificate.getNotAfter().before(new Date())) {
+                return x509Certificate.getNotAfter();
+            }
+        } catch(IOException | CertificateException e) {
+            log.warn("Could not read certificate at " + crtFile.getAbsolutePath(), e);
+        }
+
+        return null;
     }
 
     protected void createSocket() throws IOException {
@@ -140,7 +160,7 @@ public class TcpOverTlsTransport extends TcpTransport {
                 try {
                     Certificate[] certs = event.getPeerCertificates();
                     if(certs.length > 0) {
-                        if(isCaSigned(certs)) {
+                        if(isCaValidated(certs, server)) {
                             Storage.saveCaCertificate(server.getHost(), certs[0]);
                         } else {
                             Storage.saveCertificate(server.getHost(), certs[0]);
@@ -171,7 +191,7 @@ public class TcpOverTlsTransport extends TcpTransport {
         return tmf.getTrustManagers();
     }
 
-    private static boolean isCaSigned(Certificate[] certs) {
+    private static boolean isCaValidated(Certificate[] certs, HostAndPort server) {
         try {
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
             tmf.init((KeyStore)null);
@@ -195,10 +215,38 @@ public class TcpOverTlsTransport extends TcpTransport {
 
             String authType = x509Certs[0].getPublicKey().getAlgorithm().equals("EC") ? "ECDHE_ECDSA" : "RSA";
             defaultTm.checkServerTrusted(x509Certs, authType);
-            return true;
+
+            //Match the hostname as CA validated connections do, so that a certificate saved here can be validated when it is used
+            return Protocol.isOnionAddress(server) || matchesHostname(x509Certs[0], server.getHost());
         } catch(Exception e) {
             return false;
         }
+    }
+
+    private static boolean matchesHostname(X509Certificate cert, String host) throws CertificateParsingException {
+        Collection<List<?>> subjectAltNames = cert.getSubjectAlternativeNames();
+        if(subjectAltNames == null) {
+            return false;
+        }
+
+        for(List<?> subjectAltName : subjectAltNames) {
+            if(subjectAltName.size() > 1 && subjectAltName.get(0) instanceof Integer type && subjectAltName.get(1) instanceof String name) {
+                if((type == GENERAL_NAME_DNS && matchesDnsName(name, host)) || (type == GENERAL_NAME_IP_ADDRESS && name.equalsIgnoreCase(host))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean matchesDnsName(String dnsName, String host) {
+        if(dnsName.startsWith("*.")) {
+            int index = host.indexOf('.');
+            return index > 0 && host.substring(index + 1).equalsIgnoreCase(dnsName.substring(2));
+        }
+
+        return dnsName.equalsIgnoreCase(host);
     }
 
     @Override

@@ -1,7 +1,11 @@
 package com.sparrowwallet.sparrow.net.cormorant.bitcoind;
 
 import com.github.arteam.simplejsonrpc.client.JsonRpcClient;
+import com.github.arteam.simplejsonrpc.client.builder.BatchRequestBuilder;
+import com.github.arteam.simplejsonrpc.client.exception.JsonRpcBatchException;
 import com.github.arteam.simplejsonrpc.client.exception.JsonRpcException;
+import com.google.common.base.Suppliers;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.sparrowwallet.drongo.KeyPurpose;
 import com.sparrowwallet.drongo.OutputDescriptor;
@@ -12,6 +16,7 @@ import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.drongo.wallet.WalletNode;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
+import com.sparrowwallet.sparrow.event.CormorantImportStatusEvent;
 import com.sparrowwallet.sparrow.event.CormorantPruneStatusEvent;
 import com.sparrowwallet.sparrow.event.CormorantScanStatusEvent;
 import com.sparrowwallet.sparrow.event.CormorantSyncStatusEvent;
@@ -19,6 +24,7 @@ import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.net.Bwt;
 import com.sparrowwallet.sparrow.net.ConfigurationException;
 import com.sparrowwallet.sparrow.net.CoreAuthType;
+import com.sparrowwallet.sparrow.net.ElectrumServerRpc;
 import com.sparrowwallet.sparrow.net.cormorant.Cormorant;
 import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.address.InvalidAddressException;
@@ -38,6 +44,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 public class BitcoindClient {
@@ -45,37 +53,44 @@ public class BitcoindClient {
 
     public static final String CORE_WALLET_NAME = "cormorant";
     private static final int DEFAULT_GAP_LIMIT = 1000;
+    private static final int TRANSACTION_BATCH_SIZE = 100;
+    private static final int JSON_RPC_2_BATCH_VERSION = 280000;
     private static final int POSTMIX_GAP_LIMIT = 4000;
 
     private static final long PRUNED_RESCAN_TIMEGAP_MILLIS = 7200*1000;
 
     //Error codes from https://github.com/bitcoin/bitcoin/blob/master/src/rpc/protocol.h
-    public static final int RPC_METHOD_NOT_FOUND = -32601;
+    public static final int RPC_INVALID_PARAMETER = -8;
     public static final int RPC_WALLET_NOT_FOUND = -18;
 
     public static final String WALLET_ALREADY_LOADING_MESSAGE = "Wallet already loading.";
 
     private final JsonRpcClient jsonRpcClient;
     private final Timer timer = new Timer(true);
+    private final BitcoindTransport bitcoindTransport;
     private final Store store = new Store();
 
-    private NetworkInfo networkInfo;
+    //Package visible so tests can set the node version
+    NetworkInfo networkInfo;
     private String lastBlock;
     private ElectrumBlockHeader tip;
 
     private final Map<String, Lock> descriptorLocks = Collections.synchronizedMap(new HashMap<>());
     private final Map<String, ScanDate> importedDescriptors = Collections.synchronizedMap(new HashMap<>());
 
-    private final Map<String, Date> descriptorBirthDates = new HashMap<>();
-    private final Map<String, Integer> descriptorUsedIndexes = new HashMap<>();
+    private final Map<String, Date> descriptorBirthDates = Collections.synchronizedMap(new HashMap<>());
+    private final Map<String, Integer> descriptorUsedIndexes = new ConcurrentHashMap<>();
 
     private boolean initialized;
+    private volatile boolean storeLoaded;
     private boolean stopped;
 
     private Exception lastPollException;
 
     private final boolean useWallets;
     private boolean pruned;
+    private Integer pruneHeight;
+    private volatile Date cachedPrunedDate;
     private boolean legacyWalletExists;
 
     private final Lock syncingLock = new ReentrantLock();
@@ -90,14 +105,13 @@ public class BitcoindClient {
     private boolean initialImportStarted;
 
     private final List<String> pruneWarnedDescriptors = new ArrayList<>();
+    private final Set<String> importFailedDescriptors = Collections.synchronizedSet(new HashSet<>());
 
     private final Map<Sha256Hash, VsizeFeerate> mempoolEntries = new ConcurrentHashMap<>();
     private MempoolEntriesState mempoolEntriesState = MempoolEntriesState.UNINITIALIZED;
     private long timerTaskCount;
 
     public BitcoindClient(boolean useWallets) {
-        BitcoindTransport bitcoindTransport;
-
         Config config = Config.get();
         if((config.getCoreAuthType() == CoreAuthType.COOKIE || config.getCoreAuth() == null || config.getCoreAuth().length() < 2) && config.getCoreDataDir() != null) {
             bitcoindTransport = new BitcoindTransport(config.getCoreServer(), CORE_WALLET_NAME, config.getCoreDataDir());
@@ -119,6 +133,7 @@ public class BitcoindClient {
 
         BlockchainInfo blockchainInfo = getBitcoindService().getBlockchainInfo();
         pruned = blockchainInfo.pruned();
+        pruneHeight = blockchainInfo.pruneheight();
         VerboseBlockHeader blockHeader = getBitcoindService().getBlockHeader(blockchainInfo.bestblockhash());
         tip = blockHeader.getBlockHeader();
         timer.schedule(new PollTask(), 5000, 5000);
@@ -154,7 +169,7 @@ public class BitcoindClient {
             }
             legacyWalletExists = loadedWallets.contains(Bwt.DEFAULT_CORE_WALLET);
         } catch(JsonRpcException e) {
-            if(e.getErrorMessage().getCode() == RPC_METHOD_NOT_FOUND) {
+            if(ElectrumServerRpc.isMethodNotFound(e)) {
                 throw new BitcoinRPCException("Wallet support must be enabled in Litecoin Core");
             } else {
                 throw e;
@@ -175,6 +190,7 @@ public class BitcoindClient {
 
         ListSinceBlock listSinceBlock = getListSinceBlock(null);
         updateStore(listSinceBlock);
+        storeLoaded = true;
     }
 
     private ListSinceBlock getListSinceBlock(String blockHash) {
@@ -283,10 +299,16 @@ public class BitcoindClient {
         if(blockchainInfo.pruned()) {
             String pruneBlockHash = getBitcoindService().getBlockHash(blockchainInfo.pruneheight());
             VerboseBlockHeader pruneBlockHeader = getBitcoindService().getBlockHeader(pruneBlockHash);
-            return Optional.of(new Date(pruneBlockHeader.time() * 1000));
+            Date prunedDate = new Date(pruneBlockHeader.time() * 1000);
+            cachedPrunedDate = prunedDate;
+            return Optional.of(prunedDate);
         }
 
         return Optional.empty();
+    }
+
+    public Date getCachedPrunedDate() {
+        return cachedPrunedDate;
     }
 
     private ScanDate getScanDate(String normalizedDescriptor, Wallet wallet, KeyPurpose keyPurpose, Date earliestBirthDate) {
@@ -320,7 +342,7 @@ public class BitcoindClient {
         return wallet.getStandardAccountType() == StandardAccount.WHIRLPOOL_POSTMIX && keyPurpose == KeyPurpose.RECEIVE ? POSTMIX_GAP_LIMIT : DEFAULT_GAP_LIMIT;
     }
 
-    private void importDescriptors(Map<String, ScanDate> descriptors) throws ScanDateBeforePruneException {
+    private void importDescriptors(Map<String, ScanDate> descriptors) throws ScanDateBeforePruneException, ImportFailedException {
         //Sort descriptors in alphanumeric order to avoid deadlocks, particularly with BIP47 wallets
         Set<String> sortedDescriptors = new TreeSet<>(descriptors.keySet());
         for(String descriptor : sortedDescriptors) {
@@ -345,9 +367,12 @@ public class BitcoindClient {
         }
     }
 
-    private Set<String> addDescriptors(Map<String, ScanDate> descriptors) throws ScanDateBeforePruneException {
+    private Set<String> addDescriptors(Map<String, ScanDate> descriptors) throws ScanDateBeforePruneException, ImportFailedException {
         boolean forceRescan = descriptors.values().stream().anyMatch(scanDate -> scanDate.forceRescan);
-        if(!initialized || forceRescan) {
+        //Bitcoin Core extends the range of a descriptor as its addresses are used, so a wanted range beyond the one last seen is compared against its current range
+        boolean extending = initialized && descriptors.entrySet().stream().anyMatch(entry -> entry.getValue().range != null && importedDescriptors.containsKey(entry.getKey())
+                && importedDescriptors.get(entry.getKey()).range != null && entry.getValue().range > importedDescriptors.get(entry.getKey()).range);
+        if(!initialized || forceRescan || extending) {
             ListDescriptorsResult listDescriptorsResult = getBitcoindService().listDescriptors(false);
             for(ListDescriptorResult result : listDescriptorsResult.descriptors()) {
                 String descriptor = OutputDescriptor.normalize(result.desc());
@@ -417,15 +442,28 @@ public class BitcoindClient {
                 scanningDescriptors.clear();
             }
 
+            if(results.size() != importDescriptors.size()) {
+                String error = "Bitcoin Core returned " + results.size() + " results for " + importDescriptors.size() + " imported descriptors";
+                log.error(error);
+                postImportFailure(importingDescriptors.keySet().stream().collect(Collectors.toMap(descriptor -> descriptor, descriptor -> error, (a, b) -> a, LinkedHashMap::new)));
+                throw new ImportFailedException(error);
+            }
+
+            Map<String, String> failedDescriptors = new LinkedHashMap<>();
             for(int i = 0; i < importDescriptors.size(); i++) {
                 ImportDescriptor importDescriptor = importDescriptors.get(i);
                 ImportDescriptorResult importDescriptorResult = results.get(i);
                 if(importDescriptorResult.success()) {
                     importedDescriptors.put(importDescriptor.getDesc(), importingDescriptors.get(importDescriptor.getDesc()));
+                    importFailedDescriptors.remove(importDescriptor.getDesc());
                 } else {
                     log.error("Error importing descriptor " + importDescriptor.getDesc() + ": " + importDescriptorResult);
+                    String error = importDescriptorResult.error() == null ? null : importDescriptorResult.error().getMessage();
+                    failedDescriptors.put(importDescriptor.getDesc(), error == null ? "Unknown error" : error);
                 }
             }
+
+            postImportFailure(failedDescriptors);
         }
 
         initialized = true;
@@ -434,7 +472,9 @@ public class BitcoindClient {
 
     public void stop() {
         timer.cancel();
+        bitcoindTransport.close();
         pruneWarnedDescriptors.clear();
+        importFailedDescriptors.clear();
         stopped = true;
     }
 
@@ -455,9 +495,10 @@ public class BitcoindClient {
 
         List<ListTransaction> sentTransactions = new ArrayList<>();
         Map<String, Boolean> conflictCache = new HashMap<>();
+        Supplier<Boolean> mempoolLoaded = Suppliers.memoize(() -> getBitcoindService().getMempoolInfo().loaded());
 
         for(ListTransaction listTransaction : listSinceBlock.transactions()) {
-            if(isConflicted(listTransaction, conflictCache)) {
+            if(isConflicted(listTransaction, conflictCache, mempoolLoaded)) {
                 updatedScriptHashes.addAll(store.purgeTransaction(listTransaction.txid()));
                 continue;
             }
@@ -480,12 +521,12 @@ public class BitcoindClient {
             }
         }
 
+        Map<String, Set<HashIndex>> storedSpentOutputs = store.getSpentOutputs();
+        List<String> uncachedTxids = sentTransactions.stream().map(ListTransaction::txid).distinct().filter(txid -> !storedSpentOutputs.containsKey(txid)).toList();
+        fetchSpentOutputs(uncachedTxids, storedSpentOutputs);
+
         for(ListTransaction sentTransaction : sentTransactions) {
-            Set<HashIndex> spentOutputs = store.getSpentOutputs().computeIfAbsent(sentTransaction.txid(), txid -> {
-                String txhex = getTransaction(txid);
-                Transaction tx = new Transaction(Utils.hexToBytes(txhex));
-                return tx.getInputs().stream().map(txInput -> new HashIndex(txInput.getOutpoint().getHash(), txInput.getOutpoint().getIndex())).collect(Collectors.toSet());
-            });
+            Set<HashIndex> spentOutputs = storedSpentOutputs.get(sentTransaction.txid());
 
             boolean foundFundingAddress = false;
             for(HashIndex spentOutput : spentOutputs) {
@@ -514,6 +555,44 @@ public class BitcoindClient {
         }
     }
 
+    //Requested in batches from Bitcoin Core v28 and later, as a wallet may hold hundreds of spends.
+    //Earlier versions answer a batch in the JSON-RPC 1.0 form, which the client rejects, so each transaction is requested on its own.
+    //Each transaction is added to spentOutputs as it is received, so that after a failure the next poll requests only those that remain.
+    void fetchSpentOutputs(List<String> txids, Map<String, Set<HashIndex>> spentOutputs) {
+        if(networkInfo.version() >= JSON_RPC_2_BATCH_VERSION) {
+            for(List<String> batch : Lists.partition(txids, TRANSACTION_BATCH_SIZE)) {
+                fetchTransactions(batch, (txid, txhex) -> spentOutputs.put(txid, getInputOutpoints(txhex)));
+            }
+        } else {
+            for(String txid : txids) {
+                spentOutputs.put(txid, getInputOutpoints(getTransaction(txid)));
+            }
+        }
+    }
+
+    private static Set<HashIndex> getInputOutpoints(String txhex) {
+        Transaction tx = new Transaction(Utils.hexToBytes(txhex));
+        return tx.getInputs().stream().map(txInput -> new HashIndex(txInput.getOutpoint().getHash(), txInput.getOutpoint().getIndex())).collect(Collectors.toSet());
+    }
+
+    @SuppressWarnings("rawtypes")
+    private void fetchTransactions(List<String> txids, BiConsumer<String, String> transactionReceived) {
+        BatchRequestBuilder<String, Map> batchRequest = jsonRpcClient.createBatchRequest().keysType(String.class).returnType(Map.class);
+        for(String txid : txids) {
+            batchRequest.add(txid, "gettransaction", txid, true, false);
+        }
+
+        try {
+            batchRequest.execute().forEach((txid, result) -> transactionReceived.accept(txid, result.get("hex").toString()));
+        } catch(JsonRpcBatchException e) {
+            e.getSuccesses().forEach((txid, result) -> transactionReceived.accept((String)txid, ((Map<?, ?>)result).get("hex").toString()));
+            //A transaction the wallet no longer holds is requested from the node's transaction index, as getTransaction() does once gettransaction fails
+            for(Object txid : e.getErrors().keySet()) {
+                transactionReceived.accept((String)txid, getBitcoindService().getRawTransaction((String)txid, false).toString());
+            }
+        }
+    }
+
     private String getTransaction(String txid) {
         try {
             return getBitcoindService().getTransaction(txid, true, false).get("hex").toString();
@@ -537,14 +616,16 @@ public class BitcoindClient {
         }
     }
 
-    private boolean isConflicted(ListTransaction listTransaction, Map<String, Boolean> conflictCache) {
-        if(listTransaction.confirmations() == 0 && !listTransaction.walletconflicts().isEmpty()) {
+    private boolean isConflicted(ListTransaction listTransaction, Map<String, Boolean> conflictCache, Supplier<Boolean> mempoolLoaded) {
+        //A transaction replaced by one outside the wallet, or depending on a replaced parent, has mempool conflicts and no wallet conflicts (Bitcoin Core v28+)
+        if(listTransaction.confirmations() == 0 && (!listTransaction.walletconflicts().isEmpty() || (listTransaction.mempoolconflicts() != null && !listTransaction.mempoolconflicts().isEmpty()))) {
             Boolean active = conflictCache.computeIfAbsent(listTransaction.txid(), txid -> {
                 try {
                     getBitcoindService().getMempoolEntry(txid);
                     return true;
                 } catch(JsonRpcException e) {
-                    return false;
+                    //A block can confirm the transaction after it was listed, which leaves it for the next poll to record as confirmed
+                    return getBitcoindService().getTransaction(txid, true, false).get("confirmations") instanceof Number confirmations && confirmations.intValue() > 0;
                 }
             });
 
@@ -552,9 +633,12 @@ public class BitcoindClient {
                 for(String conflictedTxid : listTransaction.walletconflicts()) {
                     conflictCache.put(conflictedTxid, false);
                 }
+
+                return false;
             }
 
-            return !active;
+            //A restarted node lists its unconfirmed transactions before it has loaded its mempool, so none can be judged absent until it has
+            return mempoolLoaded.get();
         } else {
             return listTransaction.confirmations() < 0;
         }
@@ -645,6 +729,14 @@ public class BitcoindClient {
         return useWallets;
     }
 
+    public boolean isPruned() {
+        return pruned;
+    }
+
+    public Integer getPruneHeight() {
+        return pruneHeight;
+    }
+
     public Store getStore() {
         return store;
     }
@@ -687,11 +779,26 @@ public class BitcoindClient {
                     }
                 }
 
+                //The store is first loaded with the wallet's full history by initialize(), which this would otherwise request again in full alongside it
+                if(!storeLoaded) {
+                    return;
+                }
+
                 if(lastBlock != null && tip != null) {
-                    String blockhash = getBitcoindService().getBlockHash(tip.height());
-                    if(!lastBlock.equals(blockhash)) {
-                        log.warn("Reorg detected, block height " + tip.height() + " was " + lastBlock + " and now is " + blockhash);
-                        lastBlock = null;
+                    try {
+                        String blockhash = getBitcoindService().getBlockHash(tip.height());
+                        if(!lastBlock.equals(blockhash)) {
+                            log.warn("Reorg detected, block height " + tip.height() + " was " + lastBlock + " and now is " + blockhash);
+                            lastBlock = null;
+                        }
+                    } catch(JsonRpcException e) {
+                        //The active chain no longer reaches the last seen tip height, so the block has been disconnected
+                        if(e.getErrorMessage() != null && e.getErrorMessage().getCode() == RPC_INVALID_PARAMETER) {
+                            log.warn("Reorg detected, block height " + tip.height() + " was " + lastBlock + " and is now above the chain tip");
+                            lastBlock = null;
+                        } else {
+                            throw e;
+                        }
                     }
                 }
 
@@ -749,6 +856,32 @@ public class BitcoindClient {
         }
 
         return scanningWallets;
+    }
+
+    private void postImportFailure(Map<String, String> failedDescriptors) {
+        //Only warn once for each descriptor, until it is successfully imported again
+        failedDescriptors.keySet().removeIf(descriptor -> !importFailedDescriptors.add(descriptor));
+        if(!failedDescriptors.isEmpty()) {
+            Set<Wallet> failedWallets = getDescriptorWallets(failedDescriptors.keySet());
+            String errorMessage = failedDescriptors.values().stream().distinct().collect(Collectors.joining("\n"));
+            Platform.runLater(() -> EventManager.get().post(new CormorantImportStatusEvent("Error importing descriptors", failedWallets, errorMessage)));
+        }
+    }
+
+    private Set<Wallet> getDescriptorWallets(Collection<String> descriptors) {
+        Set<Wallet> descriptorWallets = new LinkedHashSet<>();
+        for(Wallet openWallet : AppServices.get().getOpenWallets().keySet()) {
+            if(openWallet.isValid()) {
+                for(KeyPurpose keyPurpose : KeyPurpose.DEFAULT_PURPOSES) {
+                    if(descriptors.contains(OutputDescriptor.normalize(OutputDescriptor.getOutputDescriptor(openWallet, keyPurpose).toString(false, false)))) {
+                        descriptorWallets.add(openWallet);
+                        break;
+                    }
+                }
+            }
+        }
+
+        return descriptorWallets;
     }
 
     private boolean isEmptyBlockchain(BlockchainInfo blockchainInfo) {

@@ -23,10 +23,10 @@ import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.glyphfont.FontAwesome5Brands;
 import com.sparrowwallet.sparrow.io.Storage;
 import javafx.application.Platform;
+import javafx.event.ActionEvent;
+import javafx.scene.AccessibleRole;
 import javafx.scene.Node;
 import javafx.scene.control.*;
-import javafx.scene.image.Image;
-import javafx.scene.image.ImageView;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -65,6 +65,7 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
     private final ToggleButton formatBip322;
     private final Wallet wallet;
     private WalletNode walletNode;
+    private Button signButton;
     private boolean canSign;
     private boolean closed;
 
@@ -122,7 +123,9 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         dialogPane.getStylesheets().add(AppServices.class.getResource("general.css").toExternalForm());
         dialogPane.getStylesheets().add(AppServices.class.getResource("dialog.css").toExternalForm());
         AppServices.setStageIcon(dialogPane.getScene().getWindow());
-        dialogPane.setHeaderText(title == null ? (wallet == null ? "Verify Message" : "Sign/Verify Message") : title);
+        String headerText = title == null ? (wallet == null ? "Verify Message" : "Sign/Verify Message") : title;
+        dialogPane.setHeaderText(headerText);
+        setTitle(headerText);
         dialogPane.setGraphic(new WalletModelImage(WalletModel.SEED));
 
         VBox vBox = new VBox();
@@ -150,6 +153,7 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         messageField.setText("Message:");
         message = new TextArea();
         message.setWrapText(true);
+        AppServices.moveFocusOnTab(message);
         message.setPrefRowCount(8);
         message.setStyle("-fx-pref-height: 160px");
         messageField.getInputs().add(message);
@@ -157,11 +161,23 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         Field signatureField = new Field();
         signatureField.setText("Signature:");
         signature = new TextArea();
+        AppServices.moveFocusOnTab(signature);
         signature.getStyleClass().add("id");
         signature.setPrefRowCount(4);
         signature.setStyle("-fx-pref-height: 80px");
         signature.setWrapText(true);
         signature.setOnMouseClicked(event -> signature.selectAll());
+
+        ContextMenu signatureMenu = new ContextMenu();
+        MenuItem copyItem = new MenuItem("Copy");
+        copyItem.setOnAction(e -> signature.copy());
+        MenuItem pasteItem = new MenuItem("Paste");
+        pasteItem.setOnAction(e -> signature.paste());
+        MenuItem clearItem = new MenuItem("Clear");
+        clearItem.setOnAction(e -> signature.clear());
+        signatureMenu.getItems().addAll(copyItem, pasteItem, clearItem);
+        signature.setContextMenu(signatureMenu);
+
         signatureField.getInputs().add(signature);
 
         Field formatField = new Field();
@@ -172,6 +188,12 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         formatBip322 = new ToggleButton("BIP322 (Simple)");
         SegmentedButton formatButtons = new SegmentedButton(formatElectrum, formatTrezor, formatBip322);
         formatButtons.setToggleGroup(formatGroup);
+        //The skin only puts the buttons in the group when it is created, after the group listener below that restores a cleared selection.
+        //Joining it now keeps each button's Tab stop listener ahead of that one, so a restored selection leaves one Tab stop as before.
+        formatButtons.getButtons().forEach(button -> {
+            button.setToggleGroup(formatGroup);
+            button.setAccessibleRole(AccessibleRole.RADIO_BUTTON);
+        });
         formatField.getInputs().add(formatButtons);
 
         fieldset.getChildren().addAll(addressField, messageField, signatureField, formatField);
@@ -209,18 +231,21 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
 
             Node showQrButton = dialogPane.lookupButton(showQrButtonType);
 
-            Button signButton = (Button) dialogPane.lookupButton(signButtonType);
+            signButton = (Button) dialogPane.lookupButton(signButtonType);
             signButton.setDisable(!canSign);
             signButton.setGraphic(getGlyph(getSignGlyph()));
             signButton.setGraphicTextGap(5);
-            signButton.setOnAction(event -> {
+            //Signing and verifying keep the dialog open, so the action is consumed before the dialog pane sets a result and closes
+            signButton.addEventFilter(ActionEvent.ACTION, event -> {
                 signMessage();
+                event.consume();
             });
 
             Button verifyButton = (Button) dialogPane.lookupButton(verifyButtonType);
             verifyButton.setDefaultButton(false);
-            verifyButton.setOnAction(event -> {
+            verifyButton.addEventFilter(ActionEvent.ACTION, event -> {
                 verifyMessage();
+                event.consume();
             });
 
             boolean validAddress = isValidAddress();
@@ -256,8 +281,10 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
                 }
             });
 
-            formatGroup.selectedToggleProperty().addListener((_, _, newVal) -> {
-                if(wallet != null) {
+            formatGroup.selectedToggleProperty().addListener((_, oldVal, newVal) -> {
+                if(newVal == null) {
+                    oldVal.setSelected(true);
+                } else if(wallet != null) {
                     boolean canSignSelectedFormat = canSignAllFormats(wallet) || newVal == formatElectrum;
                     signButton.setDisable(!isValidAddress() || !canSign || !canSignSelectedFormat);
                 }
@@ -266,11 +293,6 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
 
         EventManager.get().register(this);
         setOnCloseRequest(event -> {
-            if(ButtonBar.ButtonData.APPLY.equals(getResult())) {
-                event.consume();
-                return;
-            }
-
             if(!closed) {
                 EventManager.get().unregister(this);
                 closed = true;
@@ -279,7 +301,7 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
 
         AppServices.onEscapePressed(dialogPane.getScene(), () -> setResult(ButtonBar.ButtonData.CANCEL_CLOSE));
         AppServices.moveToActiveWindowScreen(this);
-        setResultConverter(dialogButton -> dialogButton == signButtonType || dialogButton == verifyButtonType ? ButtonBar.ButtonData.APPLY : dialogButton.getButtonData());
+        setResultConverter(ButtonType::getButtonData);
 
         Platform.runLater(() -> {
             if(address.getText().isEmpty()) {
@@ -297,8 +319,8 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
     }
 
     private void checkWalletSigning(Wallet wallet) {
-        if(wallet.getKeystores().size() != 1) {
-            throw new IllegalArgumentException("Cannot sign messages using a wallet with multiple keystores - a single key is required");
+        if(wallet.getKeystores().size() != 1 || (wallet.getPolicyType() != PolicyType.SINGLE_HD && wallet.getPolicyType() != PolicyType.SINGLE_SP)) {
+            throw new IllegalArgumentException("Cannot sign messages using this wallet type");
         }
     }
 
@@ -323,7 +345,7 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
     private boolean isValidAddress() {
         try {
             Address address = getAddress();
-            return address.getScriptType().isAllowed(PolicyType.SINGLE) || address.getScriptType() == ScriptType.P2SH;
+            return address.getScriptType().isAllowed(PolicyType.SINGLE_HD) || address.getScriptType() == ScriptType.P2SH;
         } catch (InvalidAddressException e) {
             return false;
         }
@@ -379,18 +401,21 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
     private void signUnencryptedKeystore(Wallet decryptedWallet) {
         try {
             Keystore keystore = decryptedWallet.getKeystores().getFirst();
-            ECKey privKey = keystore.getKey(walletNode);
             String signatureText;
-            if(isBip322()) {
-                ScriptType scriptType = decryptedWallet.getScriptType();
-                signatureText = Bip322.signMessageBip322(scriptType, message.getText().trim(), privKey);
+            if(decryptedWallet.getPolicyType() == PolicyType.SINGLE_SP) {
+                ECKey spendPrivKey = keystore.getSpendPrivateKey(Collections.emptyMap());
+                signatureText = Bip322.signMessageBip322Sp(walletNode.getAddress(), message.getText().trim(), spendPrivKey, walletNode.getSilentPaymentTweak());
             } else {
-                ScriptType scriptType = isElectrumSignatureFormat() ? ScriptType.P2PKH : decryptedWallet.getScriptType();
-                signatureText = privKey.signMessage(message.getText().trim(), scriptType);
+                ECKey privKey = keystore.getKey(walletNode);
+                if(isBip322()) {
+                    ScriptType scriptType = decryptedWallet.getScriptType();
+                    signatureText = Bip322.signMessageBip322(scriptType, message.getText().trim(), privKey);
+                } else {
+                    ScriptType scriptType = isElectrumSignatureFormat() ? ScriptType.P2PKH : decryptedWallet.getScriptType();
+                    signatureText = privKey.signMessage(message.getText().trim(), scriptType);
+                }
             }
-            signature.clear();
-            signature.appendText(signatureText);
-            privKey.clear();
+            showSignature(signatureText);
         } catch(Exception e) {
             log.error("Could not sign message", e);
             AppServices.showErrorDialog("Could not sign message", e.getMessage());
@@ -404,9 +429,15 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         deviceSignMessageDialog.initOwner(getDialogPane().getScene().getWindow());
         Optional<String> optSignature = deviceSignMessageDialog.showAndWait();
         if(optSignature.isPresent()) {
-            signature.clear();
-            signature.appendText(optSignature.get());
+            showSignature(optSignature.get());
         }
+    }
+
+    //Focus moves to the new signature so it is read out, rather than being filled in silently behind the Sign button
+    private void showSignature(String signatureText) {
+        signature.clear();
+        signature.appendText(signatureText);
+        signature.requestFocus();
     }
 
     private void verifyMessage() {
@@ -466,11 +497,11 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         if(scriptType == ScriptType.P2SH) {
             scriptType = ScriptType.P2SH_P2WPKH;
         }
-        if(!ScriptType.getScriptTypesForPolicyType(PolicyType.SINGLE).contains(scriptType)) {
+        if(!ScriptType.getScriptTypesForPolicyType(PolicyType.SINGLE_HD).contains(scriptType)) {
             throw new IllegalArgumentException("Only single signature P2PKH, P2SH-P2WPKH or P2WPKH addresses can verify messages.");
         }
 
-        Address signedMessageAddress = scriptType.getAddress(signedMessageKey);
+        Address signedMessageAddress = scriptType.getAddress(PolicyType.SINGLE_HD, signedMessageKey);
         return providedAddress.equals(signedMessageAddress);
     }
 
@@ -500,10 +531,7 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
 
     private void showBip322Qr() {
         Wallet signingWallet = walletNode.getWallet();
-        ScriptType scriptType = signingWallet.getScriptType();
-
-        PSBT psbt = Bip322.getBip322Psbt(scriptType, walletNode.getAddress(), message.getText().trim());
-        addBip322DerivationInfo(psbt, signingWallet);
+        PSBT psbt = buildBip322Psbt(signingWallet);
 
         byte[] psbtBytes = psbt.getForExport().serialize();
         CryptoPSBT cryptoPSBT = new CryptoPSBT(psbtBytes);
@@ -514,6 +542,40 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         if(optButtonType.isPresent() && optButtonType.get().getButtonData() == ButtonBar.ButtonData.OK_DONE) {
             scanQr();
         }
+    }
+
+    private PSBT buildBip322Psbt(Wallet signingWallet) {
+        if(signingWallet.getPolicyType() == PolicyType.SINGLE_SP) {
+            Keystore keystore = signingWallet.getKeystores().getFirst();
+            ECKey spendPubKey = keystore.getSilentPaymentScanAddress().getSpendKey();
+            KeyDerivation spendDerivation = new KeyDerivation(keystore.getKeyDerivation().getMasterFingerprint(), KeyDerivation.writePath(KeyDerivation.getBip352SpendDerivation(keystore.getKeyDerivation().getDerivation())));
+            return Bip322.getBip322PsbtSp(walletNode.getAddress(), message.getText().trim(), walletNode.getSilentPaymentTweak(), Map.of(spendPubKey, spendDerivation));
+        }
+
+        PSBT psbt = Bip322.getBip322Psbt(signingWallet.getScriptType(), walletNode.getAddress(), message.getText().trim());
+        addBip322DerivationInfo(psbt, signingWallet);
+
+        return psbt;
+    }
+
+    private String extractBip322Signature(PSBT signedPsbt) {
+        String psbtMessage = signedPsbt.getGenericSignedMessage();
+        if(psbtMessage != null && !psbtMessage.equals(message.getText().trim())) {
+            Optional<ButtonType> response = AppServices.showWarningDialog("Message mismatch",
+                    "The message in the signed PSBT does not match the message in this dialog.\n\nPSBT message: " + psbtMessage +
+                            "\n\nContinue extracting the signature?", ButtonType.NO, ButtonType.YES);
+            if(response.isEmpty() || response.get() != ButtonType.YES) {
+                return null;
+            }
+        }
+
+        Wallet signingWallet = walletNode.getWallet();
+        if(signingWallet.getPolicyType() == PolicyType.SINGLE_SP) {
+            return Bip322.getBip322SignatureFromPsbtSp(signedPsbt);
+        }
+
+        ECKey pubKey = signingWallet.getKeystores().getFirst().getPubKey(walletNode);
+        return Bip322.getBip322SignatureFromPsbt(signingWallet.getScriptType(), signedPsbt, pubKey);
     }
 
     private void addBip322DerivationInfo(PSBT psbt, Wallet signingWallet) {
@@ -527,7 +589,7 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
             psbtInput.setTapInternalKey(pubKey);
             psbtInput.getTapDerivedPublicKeys().put(ECKey.fromPublicOnly(pubKey.getPubKeyXCoord()), Map.of(fullDerivation, Collections.emptyList()));
         } else {
-            psbtInput.getDerivedPublicKeys().put(scriptType.getOutputKey(pubKey), fullDerivation);
+            psbtInput.getDerivedPublicKeys().put(scriptType.getOutputKey(signingWallet.getPolicyType(), pubKey), fullDerivation);
         }
     }
 
@@ -539,11 +601,11 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
             QRScanDialog.Result result = optionalResult.get();
             if(result.psbt != null) {
                 try {
-                    Wallet signingWallet = walletNode.getWallet();
-                    ECKey pubKey = signingWallet.getKeystores().get(0).getPubKey(walletNode);
-                    String sig = Bip322.getBip322SignatureFromPsbt(signingWallet.getScriptType(), result.psbt, pubKey);
-                    signature.clear();
-                    signature.appendText(sig);
+                    String sig = extractBip322Signature(result.psbt);
+                    if(sig != null) {
+                        signature.clear();
+                        signature.appendText(sig);
+                    }
                 } catch(Exception e) {
                     log.error("Error extracting BIP-322 signature from PSBT", e);
                     AppServices.showErrorDialog("Error extracting signature", e.getMessage());
@@ -601,9 +663,7 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
 
     private void exportBip322File() {
         Wallet signingWallet = walletNode.getWallet();
-        ScriptType scriptType = signingWallet.getScriptType();
-        PSBT psbt = Bip322.getBip322Psbt(scriptType, walletNode.getAddress(), message.getText().trim());
-        addBip322DerivationInfo(psbt, signingWallet);
+        PSBT psbt = buildBip322Psbt(signingWallet);
 
         Stage window = new Stage();
         FileChooser fileChooser = new FileChooser();
@@ -644,10 +704,11 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
                 try {
                     byte[] psbtBytes = Files.readAllBytes(file.toPath());
                     PSBT signedPsbt = new PSBT(psbtBytes, false);
-                    ECKey pubKey = walletNode.getWallet().getKeystores().get(0).getPubKey(walletNode);
-                    String sig = Bip322.getBip322SignatureFromPsbt(walletNode.getWallet().getScriptType(), signedPsbt, pubKey);
-                    signature.clear();
-                    signature.appendText(sig);
+                    String sig = extractBip322Signature(signedPsbt);
+                    if(sig != null) {
+                        signature.clear();
+                        signature.appendText(sig);
+                    }
                     return;
                 } catch(Exception e) {
                     if(file.getName().toLowerCase(Locale.ROOT).endsWith(".psbt")) {
@@ -722,13 +783,22 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
                 Wallet decryptedWallet = decryptWalletService.getValue();
                 signUnencryptedKeystore(decryptedWallet);
                 decryptedWallet.clearPrivate();
+                setDecrypting(false);
             });
             decryptWalletService.setOnFailed(workerStateEvent -> {
                 EventManager.get().post(new StorageEvent(storage.getWalletId(wallet), TimedEvent.Action.END, "Failed"));
+                setDecrypting(false);
                 AppServices.showErrorDialog("Incorrect Password", "The password was incorrect.");
             });
             EventManager.get().post(new StorageEvent(storage.getWalletId(wallet), TimedEvent.Action.START, "Decrypting wallet..."));
+            setDecrypting(true);
             decryptWalletService.start();
+        }
+    }
+
+    private void setDecrypting(boolean decrypting) {
+        if(signButton != null) {
+            signButton.setDisable(decrypting || !isValidAddress());
         }
     }
 
@@ -737,6 +807,8 @@ public class MessageSignDialog extends Dialog<ButtonBar.ButtonData> {
         protected Node createButton(ButtonType buttonType) {
             if(buttonType.getButtonData() == ButtonBar.ButtonData.LEFT) {
                 SplitMenuButton signByButton = new SplitMenuButton();
+                //A split button is not named by its text for screen readers
+                signByButton.accessibleTextProperty().bind(signByButton.textProperty());
                 signByButton.setText("Sign by QR");
                 signByButton.setDisable(wallet == null);
                 signByButton.setGraphic(getGlyph(new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.QRCODE)));

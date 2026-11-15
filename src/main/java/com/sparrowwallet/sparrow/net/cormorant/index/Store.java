@@ -18,7 +18,7 @@ public class Store {
     private final Map<Integer, String> blockHeightHashes = new HashMap<>();
     private final Map<String, MempoolEntry> mempoolEntries = new HashMap<>();
 
-    public String addAddressTransaction(Address address, ListTransaction listTransaction) {
+    public synchronized String addAddressTransaction(Address address, ListTransaction listTransaction) {
         if(listTransaction.category() == Category.receive || listTransaction.category() == Category.immature || listTransaction.category() == Category.generate) {
             fundingAddresses.put(new HashIndex(Sha256Hash.wrap(listTransaction.txid()), listTransaction.vout()), address);
         }
@@ -35,21 +35,27 @@ public class Store {
                 mempoolEntries.put(txid, null);
             }
             entries.removeIf(txe -> txe.height > 0 && txe.tx_hash.equals(listTransaction.txid()));
-            txEntry = new TxEntry(0, 0, listTransaction.txid(), listTransaction.fee());
+            //An unconfirmed entry already held is kept current by updateMempoolTransactions, at the height its parents give it. Adding it again here
+            //would report it as an update each time the wallet lists it
+            boolean held = entries.stream().anyMatch(txe -> txe.height <= 0 && txe.tx_hash.equals(listTransaction.txid()));
+            txEntry = held ? null : new TxEntry(0, 0, listTransaction.txid(), listTransaction.fee());
         } else {
             mempoolEntries.remove(txid);
-            entries.removeIf(txe -> txe.height != listTransaction.blockheight() && txe.tx_hash.equals(listTransaction.txid()));
-            txEntry = new TxEntry(listTransaction.blockheight(), listTransaction.blockindex(), listTransaction.txid());
+            TxEntry confirmedEntry = new TxEntry(listTransaction.blockheight(), listTransaction.blockindex(), listTransaction.txid());
+            //A reorg can confirm the transaction again in another block, or at the same height in another position. An entry unchanged is left in place
+            //so that it is not reported as an update each time the wallet lists it
+            entries.removeIf(txe -> txe.tx_hash.equals(listTransaction.txid()) && txe.compareTo(confirmedEntry) != 0);
+            txEntry = confirmedEntry;
         }
 
-        if(entries.add(txEntry)) {
+        if(txEntry != null && entries.add(txEntry)) {
             return scriptHash;
         }
 
         return null;
     }
 
-    public Set<String> updateMempoolTransactions() {
+    public synchronized Set<String> updateMempoolTransactions() {
         Set<String> updatedScriptHashes = new HashSet<>();
 
         for(Map.Entry<String, Set<TxEntry>> scriptHashEntry : scriptHashEntries.entrySet()) {
@@ -80,7 +86,7 @@ public class Store {
         return updatedScriptHashes;
     }
 
-    public Set<String> purgeTransaction(String txid) {
+    public synchronized Set<String> purgeTransaction(String txid) {
         Set<String> updatedScriptHashes = new HashSet<>();
 
         for(Map.Entry<String, Set<TxEntry>> scriptHashEntry : scriptHashEntries.entrySet()) {
@@ -98,7 +104,7 @@ public class Store {
         return updatedScriptHashes;
     }
 
-    public String getStatus(String scriptHash) {
+    public synchronized String getStatus(String scriptHash) {
         Set<TxEntry> entries = scriptHashEntries.get(scriptHash);
         if(entries == null || entries.isEmpty()) {
             return null;
@@ -112,7 +118,7 @@ public class Store {
         return Utils.bytesToHex(Sha256Hash.hash(scriptHashStatus.toString().getBytes(StandardCharsets.UTF_8)));
     }
 
-    public Address getFundingAddress(HashIndex spentOutput) {
+    public synchronized Address getFundingAddress(HashIndex spentOutput) {
         return fundingAddresses.get(spentOutput);
     }
 
@@ -124,16 +130,16 @@ public class Store {
         return mempoolEntries;
     }
 
-    public Set<TxEntry> getHistory(String scriptHash) {
+    public synchronized List<TxEntry> getHistory(String scriptHash) {
         Set<TxEntry> entries = scriptHashEntries.get(scriptHash);
         if(entries == null) {
-            return Collections.emptySet();
+            return Collections.emptyList();
         }
 
-        return entries;
+        return new ArrayList<>(entries);
     }
 
-    public String getBlockHash(int height) {
+    public synchronized String getBlockHash(int height) {
         return blockHeightHashes.get(height);
     }
 

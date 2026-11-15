@@ -201,22 +201,37 @@ public class PayNymService {
             List<Map<String, Object>> codes = (List<Map<String, Object>>)nymMap.get("codes");
             PaymentCode code = new PaymentCode((String)codes.stream().filter(codeMap -> codeMap.get("segwit") == Boolean.FALSE).map(codeMap -> codeMap.get("code")).findFirst().orElse(codes.get(0).get("code")));
 
+            //A payment code identifies itself, so a PayNym looked up by payment code must share its key and chain code, differing at most in the segwit feature bit
+            PaymentCode requestedCode = getRequestedPaymentCode(nymIdentifier);
+            if(requestedCode != null && !requestedCode.getNotificationAddress().equals(code.getNotificationAddress())) {
+                throw new IllegalStateException("PayNym server returned payment code " + code + " for requested payment code " + requestedCode);
+            }
+
             if(compact) {
                 return new PayNym(code, (String)nymMap.get("nymID"), (String)nymMap.get("nymName"), (Boolean)nymMap.get("segwit"), Collections.emptyList(), Collections.emptyList());
             }
 
             List<Map<String, Object>> followingMaps = (List<Map<String, Object>>)nymMap.get("following");
-            List<PayNym> following = followingMaps.stream().map(followingMap -> {
-                return PayNym.fromString((String)followingMap.get("code"), (String)followingMap.get("nymId"), (String)followingMap.get("nymName"), (Boolean)followingMap.get("segwit"), Collections.emptyList(), Collections.emptyList());
+            //An entry whose payment code does not parse is omitted rather than failing the whole PayNym
+            List<PayNym> following = followingMaps.stream().flatMap(followingMap -> {
+                return PayNym.fromString((String)followingMap.get("code"), (String)followingMap.get("nymId"), (String)followingMap.get("nymName"), (Boolean)followingMap.get("segwit"), Collections.emptyList(), Collections.emptyList()).stream();
             }).collect(Collectors.toList());
 
             List<Map<String, Object>> followersMaps = (List<Map<String, Object>>)nymMap.get("followers");
-            List<PayNym> followers = followersMaps.stream().map(followerMap -> {
-                return PayNym.fromString((String)followerMap.get("code"), (String)followerMap.get("nymId"), (String)followerMap.get("nymName"), (Boolean)followerMap.get("segwit"), Collections.emptyList(), Collections.emptyList());
+            List<PayNym> followers = followersMaps.stream().flatMap(followerMap -> {
+                return PayNym.fromString((String)followerMap.get("code"), (String)followerMap.get("nymId"), (String)followerMap.get("nymName"), (Boolean)followerMap.get("segwit"), Collections.emptyList(), Collections.emptyList()).stream();
             }).collect(Collectors.toList());
 
             return new PayNym(code, (String)nymMap.get("nymID"), (String)nymMap.get("nymName"), (Boolean)nymMap.get("segwit"), following, followers);
         });
+    }
+
+    private static PaymentCode getRequestedPaymentCode(String nymIdentifier) {
+        try {
+            return new PaymentCode(nymIdentifier);
+        } catch(InvalidPaymentCodeException e) {
+            return null;
+        }
     }
 
     public static Observable<String> getAuthToken(Wallet wallet, Map<String, Object> map) {

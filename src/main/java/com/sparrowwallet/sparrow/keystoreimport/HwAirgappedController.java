@@ -26,9 +26,9 @@ public class HwAirgappedController extends KeystoreImportDetailController {
 
     public void initializeView() {
         List<KeystoreFileImport> fileImporters = Collections.emptyList();
-        if(getMasterController().getWallet().getPolicyType().equals(PolicyType.SINGLE)) {
-            fileImporters = List.of(new ColdcardSinglesig(), new CoboVaultSinglesig(), new Jade(), new KeystoneSinglesig(), new PassportSinglesig(), new SeedSigner(), new GordianSeedTool(), new SpecterDIY(), new Krux(), new AirGapVault(), new KeycardShellSinglesig(), new Cupcake());
-        } else if(getMasterController().getWallet().getPolicyType().equals(PolicyType.MULTI)) {
+        if(getMasterController().getWallet().getPolicyType().equals(PolicyType.SINGLE_HD) || getMasterController().getWallet().getPolicyType().equals(PolicyType.SINGLE_SP)) {
+            fileImporters = List.of(new ColdcardSinglesig(), new CoboVaultSinglesig(), new Jade(), new KeystoneSinglesig(), new PassportSinglesig(), new SeedSigner(), new GordianSeedTool(), new SpecterDIY(), new Krux(), new AirGapVault(), new KeycardShellSinglesig(), new EraSinglesig(), new Cupcake());
+        } else if(getMasterController().getWallet().getPolicyType().equals(PolicyType.MULTI_HD)) {
             fileImporters = List.of(new Bip129(), new ColdcardMultisig(), new CoboVaultMultisig(), new JadeMultisig(), new KeystoneMultisig(), new PassportMultisig(), new SeedSigner(), new GordianSeedTool(), new SpecterDIY(), new Krux(), new KeycardShellMultisig());
         }
 

@@ -47,6 +47,8 @@ public class SparrowDesktop extends Application {
         URL.setURLStreamHandlerFactory(protocol -> WalletIcon.PROTOCOL.equals(protocol) ? new WalletIcon.WalletIconStreamHandler() : null);
 
         AppServices.initialize(this);
+        AppServices.monitorSystemTheme();
+        AppServices.forwardUnusedEscape();
 
         boolean createNewWallet = false;
         Mode mode = Config.get().getMode();

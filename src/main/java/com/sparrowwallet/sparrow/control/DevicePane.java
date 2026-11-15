@@ -12,6 +12,7 @@ import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.psbt.PSBT;
+import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanAddress;
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
 import com.sparrowwallet.sparrow.EventManager;
@@ -295,6 +296,8 @@ public class DevicePane extends TitledDescriptionPane {
 
     private void createImportButton() {
         importButton = requiredDerivation == null ? new SplitMenuButton() : new Button();
+        //A split button is not named by its text for screen readers
+        importButton.accessibleTextProperty().bind(importButton.textProperty());
         importButton.setAlignment(Pos.CENTER_RIGHT);
         importButton.setText("Import Keystore");
         importButton.setOnAction(event -> {
@@ -304,15 +307,36 @@ public class DevicePane extends TitledDescriptionPane {
 
         if(importButton instanceof SplitMenuButton importMenuButton) {
             if(wallet.getScriptType() == null) {
-                ScriptType[] scriptTypes = new ScriptType[] {ScriptType.P2WPKH, ScriptType.P2SH_P2WPKH, ScriptType.P2PKH, ScriptType.P2TR};
-                for(ScriptType scriptType : scriptTypes) {
-                    MenuItem item = new MenuItem(scriptType.getDescription());
-                    final List<ChildNumber> derivation = scriptType.getDefaultDerivation();
-                    item.setOnAction(event -> {
-                        importMenuButton.setDisable(true);
-                        importKeystore(derivation);
-                    });
-                    importMenuButton.getItems().add(item);
+                if(wallet.getPolicyType() == null) {
+                    List<PolicyAndScriptType> types = new ArrayList<>();
+                    for(PolicyType policyType : List.of(PolicyType.SINGLE_HD, PolicyType.SINGLE_SP)) {
+                        for(ScriptType scriptType : ScriptType.getAddressableScriptTypes(policyType)) {
+                            if(device.supportsScriptType(scriptType)) {
+                                types.add(new PolicyAndScriptType(policyType, scriptType));
+                            }
+                        }
+                    }
+                    for(PolicyAndScriptType type : types) {
+                        MenuItem item = new MenuItem(type.getDescription());
+                        final List<ChildNumber> derivation = type.scriptType().getDefaultDerivation();
+                        item.setOnAction(event -> {
+                            importMenuButton.setDisable(true);
+                            wallet.setPolicyType(type.policyType());
+                            importKeystore(derivation);
+                        });
+                        importMenuButton.getItems().add(item);
+                    }
+                } else {
+                    List<ScriptType> scriptTypes = ScriptType.getScriptTypesForPolicyType(wallet.getPolicyType()).stream().filter(device::supportsScriptType).toList();
+                    for(ScriptType scriptType : scriptTypes) {
+                        MenuItem item = new MenuItem(scriptType.getDescription());
+                        final List<ChildNumber> derivation = scriptType.getDefaultDerivation();
+                        item.setOnAction(event -> {
+                            importMenuButton.setDisable(true);
+                            importKeystore(derivation);
+                        });
+                        importMenuButton.getItems().add(item);
+                    }
                 }
                 importMenuButton.getItems().add(new SeparatorMenuItem());
                 MenuItem discoverItem = new MenuItem("Discover Wallet...");
@@ -358,11 +382,6 @@ public class DevicePane extends TitledDescriptionPane {
         });
         displayAddressButton.managedProperty().bind(displayAddressButton.visibleProperty());
         displayAddressButton.setVisible(false);
-
-        List<String> fingerprints = outputDescriptor.getExtendedPublicKeys().stream().map(extKey -> outputDescriptor.getKeyDerivation(extKey).getMasterFingerprint()).collect(Collectors.toList());
-        if(device.getFingerprint() != null && !fingerprints.contains(device.getFingerprint())) {
-            displayAddressButton.setDisable(true);
-        }
     }
 
     private void createSignMessageButton() {
@@ -374,10 +393,6 @@ public class DevicePane extends TitledDescriptionPane {
         });
         signMessageButton.managedProperty().bind(signMessageButton.visibleProperty());
         signMessageButton.setVisible(false);
-
-        if(device.getFingerprint() != null && !device.getFingerprint().equals(requiredDerivation.getMasterFingerprint())) {
-            signMessageButton.setDisable(true);
-        }
     }
 
     private void createDiscoverKeystoresButton() {
@@ -402,6 +417,8 @@ public class DevicePane extends TitledDescriptionPane {
         }
 
         getPrivateKeyButton = currentSlot > 0 ? new SplitMenuButton() : new Button();
+        //A split button is not named by its text for screen readers
+        getPrivateKeyButton.accessibleTextProperty().bind(getPrivateKeyButton.textProperty());
         getPrivateKeyButton.setAlignment(Pos.CENTER_RIGHT);
         getPrivateKeyButton.setText("Get Private Key");
         getPrivateKeyButton.setOnAction(event -> {
@@ -471,6 +488,8 @@ public class DevicePane extends TitledDescriptionPane {
             sendPin(pinField.getText());
         });
         vBox.getChildren().addAll(pinField, enterPinButton);
+        labelPinField(pinField, vBox);
+        keepFocusWhenDisabled(enterPinButton);
 
         GridPane gridPane = new GridPane();
         gridPane.setHgap(10);
@@ -518,6 +537,8 @@ public class DevicePane extends TitledDescriptionPane {
         });
 
         SplitMenuButton sendPassphraseButton = new SplitMenuButton();
+        //A split button is not named by its text for screen readers
+        sendPassphraseButton.accessibleTextProperty().bind(sendPassphraseButton.textProperty());
         sendPassphraseButton.setText("Send Passphrase");
         setDefaultButton(sendPassphraseButton);
         sendPassphraseButton.setOnAction(event -> {
@@ -580,6 +601,8 @@ public class DevicePane extends TitledDescriptionPane {
         promptPinService.setOnSucceeded(workerStateEvent -> {
             Boolean result = promptPinService.getValue();
             if(result) {
+                //Clears an earlier error, which no longer applies once the PIN can be entered
+                setDefaultStatus();
                 setContent(getPinEntry());
                 setExpanded(true);
             } else {
@@ -609,11 +632,26 @@ public class DevicePane extends TitledDescriptionPane {
                     setPassphraseButton.setDisable(true);
                     setContent(getPassphraseEntry());
                     setExpanded(true);
+                } else if(device.getFingerprint() == null && (deviceOperation.equals(DeviceOperation.DISPLAY_ADDRESS) || deviceOperation.equals(DeviceOperation.SIGN_MESSAGE)
+                        || deviceOperation.equals(DeviceOperation.DISCOVER_KEYSTORES))) {
+                    //A PIN protected device reports no fingerprint until it is unlocked, and these operations gate on it to avoid using the wrong device
+                    Hwi.EnumerateService enumerateService = new Hwi.EnumerateService(passphrase.get());
+                    enumerateService.setOnSucceeded(enumerateEvent -> {
+                        for(Device freshDevice : enumerateService.getValue()) {
+                            if(device.getPath().equals(freshDevice.getPath()) && device.getModel().equals(freshDevice.getModel())) {
+                                device.setFingerprint(freshDevice.getFingerprint());
+                            }
+                        }
+
+                        showUnlockedOperation();
+                    });
+                    enumerateService.setOnFailed(enumerateEvent -> {
+                        showUnlockedOperation();
+                        setError("Error", enumerateService.getException().getMessage());
+                    });
+                    enumerateService.start();
                 } else {
-                    showOperationButton();
-                    if(!deviceOperation.equals(DeviceOperation.IMPORT)) {
-                        setContent(getTogglePassphraseOn());
-                    }
+                    showUnlockedOperation();
                 }
             } else {
                 setError("Incorrect PIN", null);
@@ -630,6 +668,13 @@ public class DevicePane extends TitledDescriptionPane {
         setDescription("Unlocking...");
         showHideLink.setVisible(false);
         sendPinService.start();
+    }
+
+    private void showUnlockedOperation() {
+        showOperationButton();
+        if(!deviceOperation.equals(DeviceOperation.IMPORT)) {
+            setContent(getTogglePassphraseOn());
+        }
     }
 
     private void sendPassphrase(String passphrase) {
@@ -711,7 +756,7 @@ public class DevicePane extends TitledDescriptionPane {
                     return;
                 }
 
-                Service<Keystore> importService = cardApi.getImportService(derivation, messageProperty);
+                Service<Keystore> importService = cardApi.getImportService(wallet.getPolicyType(), derivation, messageProperty);
                 handleCardOperation(importService, importButton, "Import", true, event -> {
                     importKeystore(derivation, importService.getValue());
                 });
@@ -720,6 +765,9 @@ public class DevicePane extends TitledDescriptionPane {
                 setError("Import Error", e.getMessage());
                 importButton.setDisable(false);
             }
+        } else if(wallet.getScriptType() != null && !device.supportsScriptType(wallet.getScriptType())) {
+            setError("Unsupported script type", "The " + device.getModel().toDisplayString() + " cannot sign for " + wallet.getScriptType().getDescription() + " wallets.");
+            importButton.setDisable(false);
         } else if(device.getFingerprint() == null) {
             Hwi.EnumerateService enumerateService = new Hwi.EnumerateService(passphrase.get());
             enumerateService.setOnSucceeded(workerStateEvent -> {
@@ -730,13 +778,21 @@ public class DevicePane extends TitledDescriptionPane {
                     }
                 }
 
-                importXpub(derivation);
+                importKey(derivation);
             });
             enumerateService.setOnFailed(workerStateEvent -> {
                 setError("Error", enumerateService.getException().getMessage());
                 importButton.setDisable(false);
             });
             enumerateService.start();
+        } else {
+            importKey(derivation);
+        }
+    }
+
+    private void importKey(List<ChildNumber> derivation) {
+        if(wallet != null && wallet.getPolicyType() == PolicyType.SINGLE_SP) {
+            importSpscan(derivation);
         } else {
             importXpub(derivation);
         }
@@ -747,7 +803,7 @@ public class DevicePane extends TitledDescriptionPane {
 
         Hwi.GetXpubService getXpubService = new Hwi.GetXpubService(device, passphrase.get(), derivationPath);
         getXpubService.setOnSucceeded(workerStateEvent -> {
-            String xpub = getXpubService.getValue();
+            ExtendedKey xpub = getXpubService.getValue();
 
             try {
                 Keystore keystore = new Keystore();
@@ -755,7 +811,7 @@ public class DevicePane extends TitledDescriptionPane {
                 keystore.setSource(KeystoreSource.HW_USB);
                 keystore.setWalletModel(device.getModel());
                 keystore.setKeyDerivation(new KeyDerivation(device.getFingerprint(), derivationPath));
-                keystore.setExtendedPublicKey(ExtendedKey.fromDescriptor(xpub));
+                keystore.setExtendedPublicKey(xpub);
 
                 importKeystore(derivation, keystore);
             } catch(Exception e) {
@@ -771,14 +827,44 @@ public class DevicePane extends TitledDescriptionPane {
         getXpubService.start();
     }
 
+    private void importSpscan(List<ChildNumber> derivation) {
+        String derivationPath = KeyDerivation.writePath(derivation);
+
+        Hwi.GetSpscanService getSpscanService = new Hwi.GetSpscanService(device, passphrase.get(), derivationPath);
+        getSpscanService.setOnSucceeded(workerStateEvent -> {
+            SilentPaymentScanAddress spscan = getSpscanService.getValue();
+
+            try {
+                Keystore keystore = new Keystore();
+                keystore.setLabel(device.getModel().toDisplayString());
+                keystore.setSource(KeystoreSource.HW_USB);
+                keystore.setWalletModel(device.getModel());
+                keystore.setKeyDerivation(new KeyDerivation(device.getFingerprint(), derivationPath));
+                keystore.setSilentPaymentScanAddress(spscan);
+
+                importKeystore(derivation, keystore);
+            } catch(Exception e) {
+                setError("Could not retrieve spscan", e.getMessage());
+            }
+        });
+        getSpscanService.setOnFailed(workerStateEvent -> {
+            setError("Could not retrieve spscan", getSpscanService.getException().getMessage());
+            importButton.setDisable(false);
+        });
+        setDescription("Importing...");
+        showHideLink.setVisible(false);
+        getSpscanService.start();
+    }
+
     private void importKeystore(List<ChildNumber> derivation, Keystore keystore) {
         if(wallet.getScriptType() == null) {
-            ScriptType scriptType = Arrays.stream(ScriptType.ADDRESSABLE_TYPES).filter(type -> type.getDefaultDerivation().get(0).equals(derivation.get(0))).findFirst().orElse(ScriptType.P2PKH);
+            ScriptType scriptType = Arrays.stream(ScriptType.ADDRESSABLE_TYPES).filter(type -> type.getDefaultDerivation().getFirst().equals(derivation.getFirst())).findFirst().orElse(ScriptType.P2PKH);
+            PolicyType policyType = wallet.getPolicyType() != null ? wallet.getPolicyType() : PolicyType.SINGLE_HD;
             wallet.setName(device.getModel().toDisplayString());
-            wallet.setPolicyType(PolicyType.SINGLE);
+            wallet.setPolicyType(policyType);
             wallet.setScriptType(scriptType);
             wallet.getKeystores().add(keystore);
-            wallet.setDefaultPolicy(Policy.getPolicy(PolicyType.SINGLE, scriptType, wallet.getKeystores(), null));
+            wallet.setDefaultPolicy(Policy.getPolicy(policyType, scriptType, wallet.getKeystores(), null));
 
             EventManager.get().post(new WalletImportEvent(wallet));
         } else {
@@ -917,6 +1003,7 @@ public class DevicePane extends TitledDescriptionPane {
         List<Wallet> wallets = new ArrayList<>();
 
         RangeInputDialog rangeInputDialog = new RangeInputDialog(StandardAccount.ACCOUNT_0.getAccountNumber(), StandardAccount.ACCOUNT_30.getAccountNumber(), StandardAccount.ACCOUNT_10.getAccountNumber());
+        rangeInputDialog.initOwner(this.getScene().getWindow());
         rangeInputDialog.setTitle("Choose number of accounts");
         rangeInputDialog.setHeaderText("Enter the number of additional accounts to scan for existing funds.\n\nThis may take a few minutes depending on how many accounts are selected.");
         Optional<Integer> optRange = rangeInputDialog.showAndWait();
@@ -926,10 +1013,7 @@ public class DevicePane extends TitledDescriptionPane {
 
         List<StandardAccount> discoveryAccounts = new ArrayList<>(Arrays.asList(StandardAccount.values()).subList(0, optRange.get() + 1));
         Map<Hwi.WalletType, String> derivationPaths = new LinkedHashMap<>();
-        List<ScriptType> scriptTypes = new ArrayList<>(ScriptType.getAddressableScriptTypes(PolicyType.SINGLE));
-        if(device.getModel() == WalletModel.BITBOX_02) {
-            scriptTypes.remove(ScriptType.P2PKH);
-        }
+        List<ScriptType> scriptTypes = ScriptType.getAddressableScriptTypes(PolicyType.SINGLE_HD).stream().filter(device::supportsScriptType).toList();
         for(ScriptType scriptType : scriptTypes) {
             for(StandardAccount discoveryAccount : discoveryAccounts) {
                 derivationPaths.put(new Hwi.WalletType(scriptType, discoveryAccount), KeyDerivation.writePath(scriptType.getDefaultDerivation(discoveryAccount.getAccountNumber())));
@@ -938,21 +1022,21 @@ public class DevicePane extends TitledDescriptionPane {
 
         Hwi.GetXpubsService getXpubsService = new Hwi.GetXpubsService(device, passphrase.get(), derivationPaths);
         getXpubsService.setOnSucceeded(_ -> {
-            Map<Hwi.WalletType, String> accountXpubs = getXpubsService.getValue();
+            Map<Hwi.WalletType, ExtendedKey> accountXpubs = getXpubsService.getValue();
 
-            for(Map.Entry<Hwi.WalletType, String> entry : accountXpubs.entrySet()) {
+            for(Map.Entry<Hwi.WalletType, ExtendedKey> entry : accountXpubs.entrySet()) {
                 try {
                     Wallet wallet = new Wallet(device.getModel().toDisplayString());
-                    wallet.setPolicyType(PolicyType.SINGLE);
+                    wallet.setPolicyType(PolicyType.SINGLE_HD);
                     wallet.setScriptType(entry.getKey().scriptType());
                     Keystore keystore = new Keystore();
                     keystore.setLabel(device.getModel().toDisplayString());
                     keystore.setSource(KeystoreSource.HW_USB);
                     keystore.setWalletModel(device.getModel());
                     keystore.setKeyDerivation(new KeyDerivation(device.getFingerprint(), derivationPaths.get(entry.getKey())));
-                    keystore.setExtendedPublicKey(ExtendedKey.fromDescriptor(entry.getValue()));
+                    keystore.setExtendedPublicKey(entry.getValue());
                     wallet.getKeystores().add(keystore);
-                    wallet.setDefaultPolicy(Policy.getPolicy(PolicyType.SINGLE, entry.getKey().scriptType(), wallet.getKeystores(), 1));
+                    wallet.setDefaultPolicy(Policy.getPolicy(PolicyType.SINGLE_HD, entry.getKey().scriptType(), wallet.getKeystores(), 1));
                     if(entry.getKey().standardAccount().equals(StandardAccount.ACCOUNT_0)) {
                         wallets.add(wallet);
                     } else {
@@ -982,7 +1066,7 @@ public class DevicePane extends TitledDescriptionPane {
                     AppServices.showErrorDialog("No existing wallet found",
                             Config.get().getServerType() == ServerType.BITCOIN_CORE ? "The configured server type is Litecoin Core, which does not support wallet discovery.\n\n" +
                                     "You can however import the " + device.getModel().toDisplayString() + " and scan the blockchain by supplying a start date." :
-                                    "Could not find a wallet with existing transactions using the " + device.getModel().toDisplayString() + ".");
+                                    "Could not find an HD wallet with existing transactions using the " + device.getModel().toDisplayString() + ".");
                     setDefaultStatus();
                     importButton.setDisable(false);
                 }
@@ -1012,6 +1096,11 @@ public class DevicePane extends TitledDescriptionPane {
             return;
         }
 
+        if(!device.supportsScriptType(wallet.getScriptType())) {
+            setError("Unsupported script type", "The " + device.getModel().toDisplayString() + " cannot sign for " + wallet.getScriptType().getDescription() + " wallets.");
+            return;
+        }
+
         discoverKeystoresButton.setDisable(true);
         discoverKeystoresButton.setMaxHeight(discoverKeystoresButton.getHeight());
         ProgressIndicator progressIndicator = new ProgressIndicator(0);
@@ -1032,16 +1121,16 @@ public class DevicePane extends TitledDescriptionPane {
         Map<StandardAccount, Keystore> importedKeystores = new LinkedHashMap<>();
         Hwi.GetXpubsService getXpubsService = new Hwi.GetXpubsService(device, passphrase.get(), accountDerivationPaths);
         getXpubsService.setOnSucceeded(workerStateEvent -> {
-            Map<Hwi.WalletType, String> accountXpubs = getXpubsService.getValue();
+            Map<Hwi.WalletType, ExtendedKey> accountXpubs = getXpubsService.getValue();
 
-            for(Map.Entry<Hwi.WalletType, String> entry : accountXpubs.entrySet()) {
+            for(Map.Entry<Hwi.WalletType, ExtendedKey> entry : accountXpubs.entrySet()) {
                 try {
                     Keystore keystore = new Keystore();
                     keystore.setLabel(device.getModel().toDisplayString());
                     keystore.setSource(KeystoreSource.HW_USB);
                     keystore.setWalletModel(device.getModel());
                     keystore.setKeyDerivation(new KeyDerivation(masterFingerprint, accountDerivationPaths.get(entry.getKey())));
-                    keystore.setExtendedPublicKey(ExtendedKey.fromDescriptor(entry.getValue()));
+                    keystore.setExtendedPublicKey(entry.getValue());
                     importedKeystores.put(entry.getKey().standardAccount(), keystore);
                 } catch(Exception e) {
                     setError("Could not retrieve xpub", e.getMessage());
@@ -1135,16 +1224,23 @@ public class DevicePane extends TitledDescriptionPane {
             signButton.setVisible(true);
             showHideLink.setVisible(false);
         } else if(deviceOperation.equals(DeviceOperation.DISPLAY_ADDRESS)) {
+            //A device which has not yet been unlocked reports no fingerprint, so this check is only meaningful once the operation button is shown
+            List<String> fingerprints = outputDescriptor.getExtendedPublicKeys().stream().map(extKey -> outputDescriptor.getKeyDerivation(extKey).getMasterFingerprint()).collect(Collectors.toList());
             displayAddressButton.setDefaultButton(defaultDevice);
             displayAddressButton.setVisible(true);
+            displayAddressButton.setDisable(device.getFingerprint() != null && !fingerprints.contains(device.getFingerprint()));
             showHideLink.setVisible(false);
         } else if(deviceOperation.equals(DeviceOperation.SIGN_MESSAGE)) {
             signMessageButton.setDefaultButton(defaultDevice);
             signMessageButton.setVisible(true);
+            signMessageButton.setDisable(device.getFingerprint() != null && !device.getFingerprint().equals(requiredDerivation.getMasterFingerprint()));
             showHideLink.setVisible(false);
         } else if(deviceOperation.equals(DeviceOperation.DISCOVER_KEYSTORES)) {
+            //Discovery stamps the wallet master fingerprint on keystores built from the device xpubs, so a mismatched device is silently persisted
             discoverKeystoresButton.setDefaultButton(defaultDevice);
             discoverKeystoresButton.setVisible(true);
+            discoverKeystoresButton.setDisable(device.getFingerprint() != null && wallet.getKeystores().size() == 1
+                    && !device.getFingerprint().equals(wallet.getKeystores().get(0).getKeyDerivation().getMasterFingerprint()));
             showHideLink.setVisible(false);
         } else if(deviceOperation.equals(DeviceOperation.GET_PRIVATE_KEY)) {
             if(defaultDevice) {
@@ -1162,6 +1258,11 @@ public class DevicePane extends TitledDescriptionPane {
     private Node getDerivationEntry(List<ChildNumber> derivation) {
         TextField derivationField = new TextField();
         derivationField.setPromptText("Derivation path");
+        //Screen readers do not read prompt text, and accessible text on a text field would replace the path it reads, so it is named by an unshown label
+        Label derivationLabel = new Label("Derivation path");
+        derivationLabel.setVisible(false);
+        derivationLabel.setManaged(false);
+        derivationLabel.setLabelFor(derivationField);
         derivationField.setText(KeyDerivation.writePath(derivation));
         derivationField.setDisable(device.isCard() || requiredDerivation != null);
         HBox.setHgrow(derivationField, Priority.ALWAYS);
@@ -1179,7 +1280,7 @@ public class DevicePane extends TitledDescriptionPane {
             showHideLink.setVisible(true);
             setExpanded(false);
             List<ChildNumber> importDerivation = KeyDerivation.parsePath(derivationField.getText());
-            importXpub(importDerivation);
+            importKey(importDerivation);
         });
 
         derivationField.textProperty().addListener((observable, oldValue, newValue) -> {
@@ -1190,6 +1291,7 @@ public class DevicePane extends TitledDescriptionPane {
         HBox contentBox = new HBox();
         contentBox.setAlignment(Pos.TOP_RIGHT);
         contentBox.setSpacing(20);
+        contentBox.getChildren().add(derivationLabel);
         contentBox.getChildren().add(derivationField);
         contentBox.getChildren().add(importDerivationButton);
         contentBox.setPadding(new Insets(10, 30, 10, 30));
@@ -1213,6 +1315,7 @@ public class DevicePane extends TitledDescriptionPane {
         confirmationBox.getChildren().add(confirmationPin);
 
         Button initializeButton = new Button("Initialize");
+        keepFocusWhenDisabled(initializeButton);
         initializeButton.setDefaultButton(true);
         initializeButton.setOnAction(event -> {
             initializeButton.setDisable(true);
@@ -1286,6 +1389,7 @@ public class DevicePane extends TitledDescriptionPane {
         initTypeBox.getChildren().addAll(automatic, advanced, entropy);
 
         Button initializeButton = new Button("Initialize");
+        keepFocusWhenDisabled(initializeButton);
         initializeButton.setDefaultButton(true);
         initializeButton.setOnAction(event -> {
             initializeButton.setDisable(true);
@@ -1340,6 +1444,7 @@ public class DevicePane extends TitledDescriptionPane {
         contentBox.setAlignment(Pos.TOP_RIGHT);
         contentBox.setSpacing(20);
         contentBox.getChildren().add(pinField);
+        labelPinField(pinField, contentBox);
         contentBox.setPadding(new Insets(10, 30, 10, 30));
         contentBox.setPrefHeight(50);
 
@@ -1354,5 +1459,11 @@ public class DevicePane extends TitledDescriptionPane {
 
     public enum DeviceOperation {
         IMPORT, SIGN, DISPLAY_ADDRESS, SIGN_MESSAGE, DISCOVER_KEYSTORES, GET_PRIVATE_KEY, GET_ADDRESS;
+    }
+
+    protected record PolicyAndScriptType(PolicyType policyType, ScriptType scriptType) {
+        public String getDescription() {
+            return scriptType.getDescription() + (policyType == PolicyType.SINGLE_SP ? " SP" : " HD");
+        }
     }
 }

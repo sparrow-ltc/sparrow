@@ -48,7 +48,7 @@ public abstract class ServerProxyDialog extends DialogWindow {
         useProxy = new ComboBox<>("Yes", "No");
         useProxy.setSelectedIndex(Config.get().isUseProxy() ? 0 : 1);
         useProxy.addListener((selectedIndex, previousSelection, changedByUserInteraction) -> {
-            Config.get().setUseProxy(selectedIndex == 0);
+            setProxyConfig(selectedIndex == 0);
         });
         mainPanel.addComponent(useProxy);
         mainPanel.addComponent(new EmptySpace(TerminalSize.ONE));
@@ -70,26 +70,34 @@ public abstract class ServerProxyDialog extends DialogWindow {
         }
 
         proxyHost.setTextChangeListener((newText, changedByUserInteraction) -> {
-            setProxyConfig();
+            setProxyConfig(useProxy.getSelectedIndex() == 0);
         });
         proxyPort.setTextChangeListener((newText, changedByUserInteraction) -> {
-            setProxyConfig();
+            setProxyConfig(useProxy.getSelectedIndex() == 0);
         });
     }
 
-    private void setProxyConfig() {
+    private void setProxyConfig(boolean useProxySelected) {
         String hostAsString = getHost(proxyHost.getText());
         Integer portAsInteger = getPort(proxyPort.getText());
-        if(hostAsString != null && portAsInteger != null && isValidPort(portAsInteger)) {
-            Config.get().setProxyServer(HostAndPort.fromParts(hostAsString, portAsInteger).toString());
-        } else if(hostAsString != null) {
-            Config.get().setProxyServer(HostAndPort.fromHost(hostAsString).toString());
+        String proxyServer = null;
+        if(hostAsString != null && !hostAsString.isBlank() && portAsInteger != null && isValidPort(portAsInteger)) {
+            proxyServer = HostAndPort.fromParts(hostAsString, portAsInteger).toString();
+        } else if(hostAsString != null && !hostAsString.isBlank() && !proxyPort.getText().isBlank()) {
+            //An invalid port leaves the proxy as it was, rather than connecting to the default port as an empty one does. With no proxy to leave, the
+            //default port is used all the same, since a proxy that fails to connect is better than connecting without one
+            proxyServer = Config.get().getProxyServer() != null ? Config.get().getProxyServer() : HostAndPort.fromHost(hostAsString).toString();
+        } else if(hostAsString != null && !hostAsString.isBlank()) {
+            proxyServer = HostAndPort.fromHost(hostAsString).toString();
         }
+
+        Config.get().setProxyServer(proxyServer);
+        Config.get().setUseProxy(useProxySelected && proxyServer != null);
     }
 
     protected String getHost(String text) {
         try {
-            return HostAndPort.fromHost(text).getHost();
+            return HostAndPort.fromHost(text.trim()).getHost();
         } catch(IllegalArgumentException e) {
             return null;
         }

@@ -55,7 +55,7 @@ public abstract class BaseController {
         descriptorArea.setMouseOverTextDelay(Duration.ofMillis(150));
         descriptorArea.addEventHandler(MouseOverTextEvent.MOUSE_OVER_TEXT_BEGIN, e -> {
             TwoDimensional.Position position = descriptorArea.getParagraph(0).getStyleSpans().offsetToPosition(e.getCharacterIndex(), Backward);
-            int index = descriptorArea.getWallet().getPolicyType() == PolicyType.SINGLE ? position.getMajor() - 1 : ((position.getMajor() - 1) / 2);
+            int index = descriptorArea.getWallet().getPolicyType() == PolicyType.SINGLE_HD || descriptorArea.getWallet().getPolicyType() == PolicyType.SINGLE_SP ? position.getMajor() - 1 : ((position.getMajor() - 1) / 2);
             if(position.getMajor() > 0 && index >= 0 && index < descriptorArea.getWallet().getKeystores().size()) {
                 Keystore hoverKeystore = descriptorArea.getWallet().getKeystores().get(index);
                 Point2D pos = e.getScreenPosition();
@@ -75,7 +75,11 @@ public abstract class BaseController {
             builder.append(keystore.getKeyDerivation().getMasterFingerprint());
             builder.append(KeyDerivation.writePath(KeyDerivation.parsePath(keystore.getKeyDerivation().getDerivationPath())).substring(1));
             builder.append("]");
-            builder.append(keystore.getExtendedPublicKey().toString());
+            if(keystore.getExtendedPublicKey() != null) {
+                builder.append(keystore.getExtendedPublicKey().toString());
+            } else if(keystore.getSilentPaymentScanAddress() != null) {
+                builder.append(keystore.getSilentPaymentScanAddress().toKeyString());
+            }
 
             return builder.toString();
         }

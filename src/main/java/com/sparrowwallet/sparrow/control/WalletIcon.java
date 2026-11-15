@@ -2,9 +2,7 @@ package com.sparrowwallet.sparrow.control;
 
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
-import com.sparrowwallet.sparrow.Theme;
 import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
-import com.sparrowwallet.sparrow.io.Config;
 import com.sparrowwallet.sparrow.io.ImageUtils;
 import com.sparrowwallet.sparrow.io.Storage;
 import javafx.application.Platform;
@@ -12,7 +10,6 @@ import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.geometry.Pos;
 import javafx.scene.image.Image;
-import javafx.scene.image.ImageView;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.ImagePattern;
 import javafx.scene.shape.Circle;
@@ -27,7 +24,7 @@ import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
 
-public class WalletIcon extends StackPane {
+public class WalletIcon extends DecorativePane {
     public static final String PROTOCOL = "walleticon";
     private static final String QUERY = "icon";
     public static final int WIDTH = 15;
@@ -73,7 +70,7 @@ public class WalletIcon extends StackPane {
                 WalletModel walletModel = keystore.getWalletModel();
 
                 SVGImage svgImage;
-                if(Config.get().getTheme() == Theme.DARK) {
+                if(AppServices.isDarkTheme()) {
                     svgImage = loadSVGImage("/image/walletmodel/" + walletModel.getType() + "-icon-invert.svg");
                 } else {
                     svgImage = loadSVGImage("/image/walletmodel/" + walletModel.getType() + "-icon.svg");

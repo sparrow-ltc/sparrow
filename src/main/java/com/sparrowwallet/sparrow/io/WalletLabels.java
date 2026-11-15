@@ -6,6 +6,7 @@ import com.sparrowwallet.drongo.KeyDerivation;
 import com.sparrowwallet.drongo.KeyPurpose;
 import com.sparrowwallet.drongo.OutputDescriptor;
 import com.sparrowwallet.drongo.Utils;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.wallet.*;
 import com.sparrowwallet.sparrow.AppServices;
@@ -67,8 +68,12 @@ public class WalletLabels implements WalletImport, WalletExport {
             String origin = outputDescriptor.toString(true, false, false);
 
             for(Keystore keystore : exportWallet.getKeystores()) {
-                if(keystore.getLabel() != null && !keystore.getLabel().isEmpty()) {
-                    labels.add(new Label(Type.xpub, keystore.getExtendedPublicKey().toString(), keystore.getLabel(), null, null));
+                if(keystore.getLabel() != null && !keystore.getLabel().isBlank()) {
+                    if(exportWallet.getPolicyType() == PolicyType.SINGLE_SP && keystore.getSilentPaymentScanAddress() != null) {
+                        labels.add(new Label(Type.spscan, keystore.getSilentPaymentScanAddress().toKeyString(), keystore.getLabel(), null, null));
+                    } else if(keystore.getExtendedPublicKey() != null) {
+                        labels.add(new Label(Type.xpub, keystore.getExtendedPublicKey().toString(), keystore.getLabel(), null, null));
+                    }
                 }
             }
 
@@ -95,7 +100,7 @@ public class WalletLabels implements WalletImport, WalletExport {
             for(Map.Entry<BlockTransactionHashIndex, WalletNode> txoEntry : exportWallet.getWalletTxos().entrySet()) {
                 BlockTransactionHashIndex txo = txoEntry.getKey();
                 WalletNode addressNode = txoEntry.getValue();
-                Boolean spendable = (txo.isSpent() ? null : txo.getStatus() != Status.FROZEN);
+                Boolean spendable = (txo.isSpent() || txo.getStatus() != Status.FROZEN) ? null : Boolean.FALSE;
                 labels.add(new InputOutputLabel(Type.output, txo.toString(), txo.getLabel(), origin, spendable, addressNode.getDerivationPath().substring(1), txo.getValue(),
                         confirmingTxs.contains(txo.getHash()) ? null : txo.getHeight(), txo.getDate(), getFiatValue(txo, fiatRates)));
 
@@ -181,10 +186,10 @@ public class WalletLabels implements WalletImport, WalletExport {
                 }
 
                 if(label.type == Type.output) {
-                    if((label.label == null || label.label.isEmpty()) && label.spendable == null) {
+                    if((label.label == null || label.label.isBlank()) && label.spendable == null) {
                         continue;
                     }
-                } else if(label.label == null || label.label.isEmpty()) {
+                } else if(label.label == null || label.label.isBlank()) {
                     continue;
                 }
 
@@ -220,10 +225,16 @@ public class WalletLabels implements WalletImport, WalletExport {
 
                 if(label.type == Type.xpub) {
                     for(Keystore keystore : wallet.getKeystores()) {
-                        if(keystore.getExtendedPublicKey().toString().equals(label.ref)) {
-                            keystore.setLabel(label.label);
-                            List<Keystore> changedKeystores = changedWalletKeystores.computeIfAbsent(wallet, w -> new ArrayList<>());
-                            changedKeystores.add(keystore);
+                        if(keystore.getExtendedPublicKey() != null && keystore.getExtendedPublicKey().toString().equals(label.ref)) {
+                            updateKeystoreLabel(wallet, keystore, label.label, changedWalletKeystores);
+                        }
+                    }
+                }
+
+                if(label.type == Type.spscan) {
+                    for(Keystore keystore : wallet.getKeystores()) {
+                        if(keystore.getSilentPaymentScanAddress() != null && keystore.getSilentPaymentScanAddress().toKeyString().equals(label.ref)) {
+                            updateKeystoreLabel(wallet, keystore, label.label, changedWalletKeystores);
                         }
                     }
                 }
@@ -261,7 +272,7 @@ public class WalletLabels implements WalletImport, WalletExport {
                                 BlockTransactionHashIndex reference = txioEntry.getHashIndex();
                                 if((label.type == Type.output && txioEntry.getType() == HashIndexEntry.Type.OUTPUT && reference.toString().equals(label.ref))
                                         || (label.type == Type.input && txioEntry.getType() == HashIndexEntry.Type.INPUT && reference.toString().equals(label.ref))) {
-                                    if(label.label != null && !label.label.isEmpty()) {
+                                    if(label.label != null && !label.label.isBlank()) {
                                         reference.setLabel(label.label);
                                         txioEntry.labelProperty().set(label.label);
                                         addChangedEntry(changedWalletEntries, txioEntry);
@@ -312,12 +323,27 @@ public class WalletLabels implements WalletImport, WalletExport {
         return walletForms.get(0).getWallet();
     }
 
+    private static void updateKeystoreLabel(Wallet wallet, Keystore keystore, String label, Map<Wallet, List<Keystore>> changedWalletKeystores) {
+        //Keystore labels are length constrained and must be unique, and an invalid label renders the wallet file unopenable
+        String previousLabel = keystore.getLabel();
+        keystore.setLabel(label.length() > Keystore.MAX_LABEL_LENGTH ? label.substring(0, Keystore.MAX_LABEL_LENGTH) : label);
+
+        if(wallet.containsDuplicateKeystoreLabels()) {
+            log.warn("Not importing keystore label of " + label + " for " + previousLabel + " as it duplicates another keystore label");
+            keystore.setLabel(previousLabel);
+            return;
+        }
+
+        List<Keystore> changedKeystores = changedWalletKeystores.computeIfAbsent(wallet, w -> new ArrayList<>());
+        changedKeystores.add(keystore);
+    }
+
     private static void updateHashIndexEntryLabel(Label label, Entry entry) {
         if(entry instanceof HashIndexEntry hashIndexEntry) {
             BlockTransactionHashIndex reference = hashIndexEntry.getHashIndex();
             if((label.type == Type.output && hashIndexEntry.getType() == HashIndexEntry.Type.OUTPUT && reference.toString().equals(label.ref))
                     || (label.type == Type.input && hashIndexEntry.getType() == HashIndexEntry.Type.INPUT && reference.toString().equals(label.ref))) {
-                if(label.label != null && !label.label.isEmpty()) {
+                if(label.label != null && !label.label.isBlank()) {
                     hashIndexEntry.labelProperty().set(label.label);
                 }
             }
@@ -432,10 +458,14 @@ public class WalletLabels implements WalletImport, WalletExport {
     }
 
     private enum Type {
-        tx, addr, pubkey, input, output, xpub
+        tx, addr, pubkey, input, output, xpub, spscan
     }
 
     private static class Label {
+        public Label() {
+            //required for Gson deserialization
+        }
+
         public Label(Type type, String ref, String label, String origin, Boolean spendable) {
             this.type = type;
             this.ref = ref;
@@ -547,13 +577,15 @@ public class WalletLabels implements WalletImport, WalletExport {
         public static Origin fromOutputDescriptor(OutputDescriptor outputDescriptor) {
             Origin origin = new Origin();
             origin.scriptType = outputDescriptor.getScriptType();
-            origin.keyDerivations = new HashSet<>(outputDescriptor.getExtendedPublicKeysMap().values());
+            origin.keyDerivations = Stream.concat(outputDescriptor.getExtendedPublicKeysMap().values().stream(), outputDescriptor.getSilentPaymentScanAddresses().values().stream())
+                    .map(keyDerivation -> new KeyDerivation(keyDerivation.getMasterFingerprint(), KeyDerivation.writePath(keyDerivation.getDerivation())))
+                    .collect(Collectors.toCollection(HashSet::new));
             return origin;
         }
 
         public static Origin fromString(String strOrigin) {
             Origin origin = new Origin();
-            origin.scriptType = ScriptType.fromDescriptor(strOrigin);
+            origin.scriptType = OutputDescriptor.isSilentPaymentDescriptor(strOrigin) ? ScriptType.P2TR : ScriptType.fromDescriptor(strOrigin);
             origin.keyDerivations = new HashSet<>();
             Matcher keyOriginMatcher = KEY_ORIGIN_PATTERN.matcher(strOrigin);
             while(keyOriginMatcher.find()) {

@@ -40,15 +40,15 @@ public class WalletLabelDialog extends Dialog<String> {
 
         Glyph wallet = new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.WALLET);
         wallet.setFontSize(50);
-        dialogPane.setGraphic(wallet);
+        dialogPane.setGraphic(new DecorativePane(wallet));
 
         final VBox content = new VBox(20);
         label = (CustomTextField) TextFields.createClearableTextField();
-        label.setText(initialName);
         label.setTextFormatter(new TextFormatter<>((change) -> {
             change.setText(change.getText().replaceAll("[\\\\/:*?\"<>|]", "_"));
             return change;
         }));
+        label.setText(initialName);
         content.getChildren().add(label);
 
         dialogPane.setContent(content);

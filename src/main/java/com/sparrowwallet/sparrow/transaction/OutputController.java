@@ -126,9 +126,9 @@ public class OutputController extends TransactionFormController implements Initi
                 WalletTransaction.Output output = outputs.get(outputForm.getIndex());
                 if(output instanceof WalletTransaction.NonAddressOutput) {
                     outputFieldset.setText(baseText);
-                } else if(output instanceof WalletTransaction.SilentPaymentOutput) {
-                    outputFieldset.setText(baseText + " - Silent Payment");
-                } else if(output instanceof WalletTransaction.ConsolidationOutput) {
+                } else if(output instanceof WalletTransaction.SilentPaymentChangeOutput) {
+                    outputFieldset.setText(baseText + " - Change");
+                } else if(output instanceof WalletTransaction.ConsolidationOutput || output instanceof WalletTransaction.SilentPaymentConsolidationOutput) {
                     outputFieldset.setText(baseText + " - Consolidation");
                 } else if(output instanceof WalletTransaction.PaymentOutput paymentOutput) {
                     Payment payment = paymentOutput.getPayment();

@@ -5,6 +5,7 @@ import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.crypto.ChildNumber;
 import com.sparrowwallet.drongo.crypto.ECDSASignature;
 import com.sparrowwallet.drongo.crypto.ECKey;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.psbt.PSBT;
 import com.sparrowwallet.drongo.psbt.PSBTInput;
@@ -26,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class KeycardApi extends CardApi {
@@ -63,7 +65,7 @@ public class KeycardApi extends CardApi {
 
         if(!cardStatus.isInitializedCard()) {
             try {
-                String puk = String.format("%012d", new SecureRandom().nextLong(999999999999L));
+                String puk = String.format(Locale.ROOT, "%012d", new SecureRandom().nextLong(999999999999L));
                 this.cardProtocol.init(pin, puk, "KeycardDefaultPairing").checkOK();
                 this.cardProtocol.select().checkOK();
             } catch(IOException | APDUException e) {
@@ -145,8 +147,8 @@ public class KeycardApi extends CardApi {
     }
 
     @Override
-    public Service<Keystore> getImportService(List<ChildNumber> derivation, StringProperty messageProperty) {
-        return new CardImportPane.CardImportService(new Keycard(), pin, derivation, messageProperty);
+    public Service<Keystore> getImportService(PolicyType policyType, List<ChildNumber> derivation, StringProperty messageProperty) {
+        return new CardImportPane.CardImportService(new Keycard(), policyType, pin, derivation, messageProperty);
     }
 
     private byte[] compressedPub(byte[] uncompressedPub) {
@@ -369,6 +371,7 @@ public class KeycardApi extends CardApi {
             this.fullPath = fullPath;
         }
 
+        //Signatures returned here are verified against the wallet keys by PSBT.verifyCombinedSignatures() when the signed PSBT is combined
         @Override
         public TransactionSignature sign(Sha256Hash hash, SigHash sigHash, TransactionSignature.Type signatureType) {
             try {
@@ -382,10 +385,8 @@ public class KeycardApi extends CardApi {
                     pubkey = ECKey.fromPublicOnly(compressedPub(sig.getPublicKey()));
 
                     ECDSASignature ecdsaSig = new ECDSASignature(new BigInteger(1, sig.getR()), new BigInteger(1, sig.getS())).toCanonicalised();
-                    TransactionSignature txSig = new TransactionSignature(ecdsaSig, sigHash);
 
-                    boolean isCorrect = pubkey.verify(hash, txSig);
-                    return txSig;
+                    return new TransactionSignature(ecdsaSig, sigHash);
                 } else {
                     throw new CardException(WalletModel.KEYCARD.toDisplayString() + " cannot sign Taproot transactions");
                 }

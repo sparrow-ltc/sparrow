@@ -94,7 +94,7 @@ public class KeycardCommandSet {
     }
 
     /**
-     * Returns the application info as stored from the last sent SELECT command. Returns null if no succesful SELECT
+     * Returns the application info as stored from the last sent SELECT command. Returns null if no successful SELECT
      * command has been sent using this command set.
      *
      * @return the application info object
@@ -611,7 +611,7 @@ public class KeycardCommandSet {
      * Sends an EXPORT KEY APDU to export the current key.
      *
      * @param publicOnly exports only the public key
-     * @return the raw card reponse
+     * @return the raw card response
      * @throws IOException communication error
      */
     public APDUResponse exportCurrentKey(boolean publicOnly) throws IOException {
@@ -622,7 +622,7 @@ public class KeycardCommandSet {
      * Sends an EXPORT KEY APDU to export the current key.
      *
      * @param p2 the p2 parameter
-     * @return the raw card reponse
+     * @return the raw card response
      * @throws IOException communication error
      */
     public APDUResponse exportCurrentKey(byte p2) throws IOException {

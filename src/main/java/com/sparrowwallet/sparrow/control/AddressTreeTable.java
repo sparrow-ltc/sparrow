@@ -80,6 +80,7 @@ public class AddressTreeTable extends CoinTreeTable {
         contextMenu.getItems().add(showCountItem);
         getColumns().forEach(col -> col.setContextMenu(contextMenu));
 
+        setPlaceholder(getDefaultPlaceholder(rootEntry.getWallet()));
         setEditable(true);
         setupColumnWidths();
 
@@ -134,6 +135,7 @@ public class AddressTreeTable extends CoinTreeTable {
     public void updateHistory(List<WalletNode> updatedNodes) {
         //We only ever add child nodes - never remove in order to keep a full sequence (unless hide empty used addresses is set)
         NodeEntry rootEntry = (NodeEntry)getRoot().getValue();
+        setUnitFormat(rootEntry.getWallet());
 
         Map<WalletNode, NodeEntry> childNodes = new HashMap<>();
         for(Entry childEntry : rootEntry.getChildren()) {
@@ -170,9 +172,9 @@ public class AddressTreeTable extends CoinTreeTable {
         refresh();
     }
 
-    public void updateLabel(Entry entry) {
+    public void updateLabels(Collection<Entry> entries) {
         Entry rootEntry = getRoot().getValue();
-        rootEntry.updateLabel(entry);
+        rootEntry.updateLabels(entries);
     }
 
     public void showTransactionsCount(boolean show) {

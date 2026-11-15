@@ -3,6 +3,7 @@ package com.sparrowwallet.sparrow.terminal.wallet;
 import com.googlecode.lanterna.TerminalPosition;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.gui2.*;
+import com.googlecode.lanterna.gui2.dialogs.TextInputDialogBuilder;
 import com.sparrowwallet.drongo.ExtendedKey;
 import com.sparrowwallet.drongo.KeyDerivation;
 import com.sparrowwallet.drongo.OutputDescriptor;
@@ -18,10 +19,14 @@ import com.sparrowwallet.sparrow.terminal.SparrowTerminal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class WatchOnlyDialog extends NewWalletDialog {
     private static final Logger log = LoggerFactory.getLogger(WatchOnlyDialog.class);
+
+    private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd");
 
     private final TextBox descriptor;
     private final Button importWallet;
@@ -93,32 +98,35 @@ public class WatchOnlyDialog extends NewWalletDialog {
 
     @Override
     protected List<Wallet> getWallets() throws ImportException {
-        try {
-            return getWalletFromXpub();
-        } catch(Exception e1) {
-            try {
-                return getWalletFromOutputDescriptor();
-            } catch(Exception e2) {
-                log.error("Could not determine wallet from descriptor: " + descriptor.getText(), e2);
+        String text = descriptor.getText().replaceAll("\\s+", "");
+
+        if(ExtendedKey.isValid(text)) {
+            ExtendedKey extendedKey = ExtendedKey.fromDescriptor(text);
+            if(!extendedKey.getKey().isPubKeyOnly()) {
+                throw new ImportException("An extended private key cannot be used to create a watch only wallet. Enter an extended public key, or an output descriptor if the private key is intended to be imported.");
             }
+
+            return getWalletFromXpub(extendedKey, ExtendedKey.Header.fromExtendedKey(text));
         }
 
-        return Collections.emptyList();
+        try {
+            return getWalletFromOutputDescriptor(text);
+        } catch(Exception e) {
+            log.error("Could not determine wallet from descriptor: " + text, e);
+            throw new ImportException("Could not determine wallet from descriptor: " + e.getMessage(), e);
+        }
     }
 
-    private List<Wallet> getWalletFromXpub() {
-        ExtendedKey xpub = ExtendedKey.fromDescriptor(descriptor.getText().replaceAll("\\s+", ""));
-        ExtendedKey.Header header = ExtendedKey.Header.fromExtendedKey(descriptor.getText());
-
+    private List<Wallet> getWalletFromXpub(ExtendedKey xpub, ExtendedKey.Header header) {
         Set<ScriptType> scriptTypes = new LinkedHashSet<>();
         scriptTypes.add(ScriptType.P2WPKH);
         scriptTypes.add(header.getDefaultScriptType());
-        scriptTypes.addAll(ScriptType.getAddressableScriptTypes(PolicyType.SINGLE));
+        scriptTypes.addAll(ScriptType.getAddressableScriptTypes(PolicyType.SINGLE_HD));
 
         List<Wallet> wallets = new ArrayList<>();
         for(ScriptType scriptType : scriptTypes) {
             Wallet wallet = new Wallet(walletName);
-            wallet.setPolicyType(PolicyType.SINGLE);
+            wallet.setPolicyType(PolicyType.SINGLE_HD);
             wallet.setScriptType(scriptType);
 
             Keystore keystore = new Keystore();
@@ -136,11 +144,33 @@ public class WatchOnlyDialog extends NewWalletDialog {
         return wallets;
     }
 
-    private List<Wallet> getWalletFromOutputDescriptor() {
-        OutputDescriptor outputDescriptor = OutputDescriptor.getOutputDescriptor(descriptor.getText().replaceAll("\\s+", ""));
+    private List<Wallet> getWalletFromOutputDescriptor(String text) {
+        OutputDescriptor outputDescriptor = OutputDescriptor.getOutputDescriptor(text);
         Wallet wallet = outputDescriptor.toWallet();
         wallet.setName(walletName);
+        if(wallet.getPolicyType() == PolicyType.SINGLE_SP && wallet.getBirthDate() == null && wallet.getBirthHeight() == null) {
+            wallet.setBirthDate(requestBirthDate());
+        }
+
         return List.of(wallet);
+    }
+
+    private Date requestBirthDate() {
+        TextInputDialogBuilder builder = new TextInputDialogBuilder().setTitle("Wallet Birth Date");
+        builder.setDescription("Silent payments are scanned for from this date onwards." + System.lineSeparator() + "Enter the date this wallet was created as " + DATE_FORMAT.toPattern() + ".");
+        builder.setInitialContent(DATE_FORMAT.format(new Date()));
+
+        String enteredDate = builder.build().showDialog(SparrowTerminal.get().getGui());
+        if(enteredDate == null || enteredDate.isBlank()) {
+            return null;
+        }
+
+        try {
+            return DATE_FORMAT.parse(enteredDate.trim());
+        } catch(ParseException e) {
+            log.warn("Could not parse the birth date entered for " + walletName);
+            return null;
+        }
     }
 
     private List<String> splitString(String stringToSplit, int maxLength) {

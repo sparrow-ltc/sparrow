@@ -3,6 +3,7 @@ package com.sparrowwallet.sparrow.io;
 import com.google.common.io.ByteStreams;
 import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.drongo.Utils;
+import com.sparrowwallet.drongo.crypto.InvalidPasswordException;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.wallet.MnemonicException;
@@ -22,7 +23,7 @@ public class ElectrumTest extends IoTest {
         Electrum electrum = new Electrum();
         Wallet wallet = electrum.importWallet(getInputStream("electrum-singlesig-wallet.json"), null);
 
-        Assertions.assertEquals(PolicyType.SINGLE, wallet.getPolicyType());
+        Assertions.assertEquals(PolicyType.SINGLE_HD, wallet.getPolicyType());
         Assertions.assertEquals(ScriptType.P2SH_P2WPKH, wallet.getScriptType());
         Assertions.assertEquals(1, wallet.getDefaultPolicy().getNumSignaturesRequired());
         Assertions.assertEquals("sh(wpkh(trezortest))", wallet.getDefaultPolicy().getMiniscript().getScript().toLowerCase(Locale.ROOT));
@@ -42,7 +43,7 @@ public class ElectrumTest extends IoTest {
 
         wallet = electrum.importWallet(new ByteArrayInputStream(baos.toByteArray()), null);
         Assertions.assertTrue(wallet.isValid());
-        Assertions.assertEquals(PolicyType.SINGLE, wallet.getPolicyType());
+        Assertions.assertEquals(PolicyType.SINGLE_HD, wallet.getPolicyType());
         Assertions.assertEquals(ScriptType.P2SH_P2WPKH, wallet.getScriptType());
         Assertions.assertEquals(1, wallet.getDefaultPolicy().getNumSignaturesRequired());
         Assertions.assertEquals("sh(wpkh(trezortest))", wallet.getDefaultPolicy().getMiniscript().getScript().toLowerCase(Locale.ROOT));
@@ -57,7 +58,7 @@ public class ElectrumTest extends IoTest {
         Electrum electrum = new Electrum();
         Wallet wallet = electrum.importWallet(getInputStream("electrum-multisig-wallet.json"), null);
 
-        Assertions.assertEquals(PolicyType.MULTI, wallet.getPolicyType());
+        Assertions.assertEquals(PolicyType.MULTI_HD, wallet.getPolicyType());
         Assertions.assertEquals(ScriptType.P2SH_P2WSH, wallet.getScriptType());
         Assertions.assertEquals(2, wallet.getDefaultPolicy().getNumSignaturesRequired());
         Assertions.assertEquals("sh(wsh(sortedmulti(2,coldcard6ba6cfd,coldcard747b698,coldcard7bb026b,coldcard0f05694)))", wallet.getDefaultPolicy().getMiniscript().getScript().toLowerCase(Locale.ROOT));
@@ -67,6 +68,13 @@ public class ElectrumTest extends IoTest {
         Assertions.assertEquals("7bb026be", wallet.getKeystores().get(2).getKeyDerivation().getMasterFingerprint());
         Assertions.assertEquals("m/48'/1'/0'/1'", wallet.getKeystores().get(2).getKeyDerivation().getDerivationPath());
         Assertions.assertTrue(wallet.isValid());
+    }
+
+    @Test
+    public void testMultisigImportExtraCosigner() {
+        Network.set(Network.TESTNET);
+        Electrum electrum = new Electrum();
+        Assertions.assertThrows(ImportException.class, () -> electrum.importWallet(getInputStream("electrum-multisig-wallet-extrakey.json"), null));
     }
 
     @Test
@@ -80,7 +88,7 @@ public class ElectrumTest extends IoTest {
 
         wallet = electrum.importWallet(new ByteArrayInputStream(baos.toByteArray()), null);
         Assertions.assertTrue(wallet.isValid());
-        Assertions.assertEquals(PolicyType.MULTI, wallet.getPolicyType());
+        Assertions.assertEquals(PolicyType.MULTI_HD, wallet.getPolicyType());
         Assertions.assertEquals(ScriptType.P2SH_P2WSH, wallet.getScriptType());
         Assertions.assertEquals(2, wallet.getDefaultPolicy().getNumSignaturesRequired());
         Assertions.assertEquals("sh(wsh(sortedmulti(2,coldcard6ba6cfd,coldcard747b698,coldcard7bb026b,coldcard0f05694)))", wallet.getDefaultPolicy().getMiniscript().getScript().toLowerCase(Locale.ROOT));
@@ -98,13 +106,23 @@ public class ElectrumTest extends IoTest {
         Wallet wallet = electrum.importWallet(new ByteArrayInputStream(walletBytes), "pass");
 
         Assertions.assertTrue(wallet.isValid());
-        Assertions.assertEquals(PolicyType.SINGLE, wallet.getPolicyType());
+        Assertions.assertEquals(PolicyType.SINGLE_HD, wallet.getPolicyType());
         Assertions.assertEquals(ScriptType.P2WPKH, wallet.getScriptType());
         Assertions.assertEquals(1, wallet.getDefaultPolicy().getNumSignaturesRequired());
         Assertions.assertEquals("wpkh(electrum)", wallet.getDefaultPolicy().getMiniscript().getScript().toLowerCase(Locale.ROOT));
         Assertions.assertEquals("f881eac5", wallet.getKeystores().get(0).getKeyDerivation().getMasterFingerprint());
         Assertions.assertEquals("m/0'", wallet.getKeystores().get(0).getKeyDerivation().getDerivationPath());
         Assertions.assertEquals("xpub69iSRreMB6fu24sU8Tdxv7yYGqzPkDwPkwqUfKJTxW3p8afW7XvTewVCapuX3dQjdD197iF65WcjYaNpFbwWT3RyuZ1KJ3ToJNVWKWyAJ6f", wallet.getKeystores().get(0).getExtendedPublicKey().toString());
+    }
+
+    @Test
+    public void testEncryptedImportInvalidPassword() throws IOException {
+        Electrum electrum = new Electrum();
+        byte[] walletBytes = ByteStreams.toByteArray(getInputStream("electrum-encrypted"));
+
+        ImportException importException = Assertions.assertThrows(ImportException.class, () -> electrum.importWallet(new ByteArrayInputStream(walletBytes), "wrong"));
+        //FileImportPane reports "Invalid wallet password" by unwrapping this cause - dropping it degrades the message to a generic import error
+        Assertions.assertInstanceOf(InvalidPasswordException.class, importException.getCause());
     }
 
     @Test
@@ -118,7 +136,7 @@ public class ElectrumTest extends IoTest {
 
         wallet = electrum.importWallet(new ByteArrayInputStream(baos.toByteArray()), null);
         Assertions.assertTrue(wallet.isValid());
-        Assertions.assertEquals(PolicyType.SINGLE, wallet.getPolicyType());
+        Assertions.assertEquals(PolicyType.SINGLE_HD, wallet.getPolicyType());
         Assertions.assertEquals(ScriptType.P2WPKH, wallet.getScriptType());
         Assertions.assertEquals(1, wallet.getDefaultPolicy().getNumSignaturesRequired());
         Assertions.assertEquals("wpkh(electrum)", wallet.getDefaultPolicy().getMiniscript().getScript().toLowerCase(Locale.ROOT));

@@ -6,6 +6,7 @@ import com.sparrowwallet.drongo.bip47.PaymentCode;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.crypto.EncryptedData;
 import com.sparrowwallet.drongo.crypto.EncryptionType;
+import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanAddress;
 import com.sparrowwallet.drongo.wallet.*;
 import org.jdbi.v3.core.mapper.RowMapper;
 import org.jdbi.v3.core.statement.StatementContext;
@@ -28,6 +29,7 @@ public class KeystoreMapper implements RowMapper<Keystore> {
         keystore.setMwebScanPrivateKey(rs.getBytes("keystore.mwebScanPrivateKey") == null ? null : ECKey.fromPrivate(rs.getBytes("keystore.mwebScanPrivateKey")));
         keystore.setMwebSpendPublicKey(rs.getBytes("keystore.mwebSpendPublicKey") == null ? null : ECKey.fromPublicOnly(rs.getBytes("keystore.mwebSpendPublicKey")));
         keystore.setExternalPaymentCode(rs.getString("keystore.externalPaymentCode") == null ? null : PaymentCode.fromString(rs.getString("keystore.externalPaymentCode")));
+        keystore.setSilentPaymentScanAddress(rs.getBytes("keystore.silentPaymentScanAddress") == null ? null : SilentPaymentScanAddress.fromBytes(rs.getBytes("keystore.silentPaymentScanAddress")));
         keystore.setDeviceRegistration(rs.getBytes("keystore.deviceRegistration"));
 
         if(rs.getBytes("masterPrivateExtendedKey.privateKey") != null) {

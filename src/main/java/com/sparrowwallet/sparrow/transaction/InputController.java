@@ -188,10 +188,18 @@ public class InputController extends TransactionFormController implements Initia
     }
 
     private void updateOutpoint(Map<Sha256Hash, BlockTransaction> inputTransactions) {
+        TransactionInput txInput = inputForm.getTransactionInput();
+        BlockTransaction fetchedTransaction = inputTransactions.get(txInput.getOutpoint().getHash());
+        if(fetchedTransaction != null && fetchedTransaction.getTransaction() == null) {
+            outpoint.setVisible(true);
+            linkedOutpoint.setVisible(false);
+            outpoint.setText(txInput.getOutpoint().getHash().toString() + ":" + txInput.getOutpoint().getIndex());
+            return;
+        }
+
         outpoint.setVisible(false);
         linkedOutpoint.setVisible(true);
 
-        TransactionInput txInput = inputForm.getTransactionInput();
         linkedOutpoint.setText(txInput.getOutpoint().getHash().toString() + ":" + txInput.getOutpoint().getIndex());
         linkedOutpoint.setOnAction(event -> {
             BlockTransaction linkedTransaction = inputTransactions.get(txInput.getOutpoint().getHash());
@@ -204,6 +212,10 @@ public class InputController extends TransactionFormController implements Initia
         TransactionInput txInput = inputForm.getTransactionInput();
         if(!txInput.isCoinBase()) {
             BlockTransaction blockTransaction = inputTransactions.get(txInput.getOutpoint().getHash());
+            if(blockTransaction != null && blockTransaction.getTransaction() == null) {
+                return;
+            }
+
             if(blockTransaction == null) {
                 if(inputForm.getIndex() < inputForm.getMaxInputFetched()) {
                     throw new IllegalStateException("Could not retrieve block transaction for input #" + inputForm.getIndex());
@@ -379,7 +391,9 @@ public class InputController extends TransactionFormController implements Initia
     private void initializeLocktimeFields(TransactionInput txInput) {
         Transaction transaction = inputForm.getTransaction();
         locktimeToggleGroup.selectedToggleProperty().addListener((ov, old_toggle, new_toggle) -> {
-            if(locktimeToggleGroup.getSelectedToggle() != null) {
+            if(new_toggle == null) {
+                old_toggle.setSelected(true);
+            } else {
                 String selection = locktimeToggleGroup.getSelectedToggle().getUserData().toString();
                 if(selection.equals("none")) {
                     locktimeFieldset.getChildren().removeAll(locktimeRelativeField, locktimeAbsoluteField);

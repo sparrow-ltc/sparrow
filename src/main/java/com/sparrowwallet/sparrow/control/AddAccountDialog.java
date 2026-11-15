@@ -1,5 +1,6 @@
 package com.sparrowwallet.sparrow.control;
 
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.wallet.KeystoreSource;
 import com.sparrowwallet.drongo.wallet.StandardAccount;
 import com.sparrowwallet.drongo.wallet.Wallet;
@@ -34,7 +35,7 @@ public class AddAccountDialog extends Dialog<List<StandardAccount>> {
 
         Glyph key = new Glyph(FontAwesome5.FONT_NAME, FontAwesome5.Glyph.SORT_NUMERIC_DOWN);
         key.setFontSize(50);
-        dialogPane.setGraphic(key);
+        dialogPane.setGraphic(new DecorativePane(key));
 
         final VBox content = new VBox(10);
         content.setPrefHeight(50);
@@ -67,8 +68,9 @@ public class AddAccountDialog extends Dialog<List<StandardAccount>> {
         }
 
         final ButtonType discoverButtonType = new javafx.scene.control.ButtonType("Discover", ButtonBar.ButtonData.LEFT);
-        if(!availableAccounts.isEmpty() && (masterWallet.getKeystores().stream().allMatch(ks -> ks.getSource() == KeystoreSource.SW_SEED)
-                        || (masterWallet.getKeystores().size() == 1 && masterWallet.getKeystores().stream().allMatch(ks -> ks.getSource() == KeystoreSource.HW_USB)))) {
+        if(!availableAccounts.isEmpty() && masterWallet.getPolicyType() != PolicyType.SINGLE_SP
+                && (masterWallet.getKeystores().stream().allMatch(ks -> ks.getSource() == KeystoreSource.SW_SEED)
+                        || (masterWallet.getPolicyType() == PolicyType.SINGLE_HD && masterWallet.getKeystores().stream().allMatch(ks -> ks.getSource() == KeystoreSource.HW_USB)))) {
             dialogPane.getButtonTypes().add(discoverButtonType);
             Button discoverButton = (Button)dialogPane.lookupButton(discoverButtonType);
             discoverButton.disableProperty().bind(AppServices.onlineProperty().not());
@@ -108,7 +110,12 @@ public class AddAccountDialog extends Dialog<List<StandardAccount>> {
         } else {
             standardAccountCombo.getSelectionModel().select(0);
         }
-        content.getChildren().add(standardAccountCombo);
+        //The header names the choice, so a hidden label names the pop-up for screen readers, which still read its value
+        Label accountLabel = new Label("Account to add");
+        accountLabel.setLabelFor(standardAccountCombo);
+        accountLabel.setVisible(false);
+        accountLabel.setManaged(false);
+        content.getChildren().addAll(standardAccountCombo, accountLabel);
 
         dialogPane.setContent(content);
         setResultConverter(dialogButton -> dialogButton == ButtonType.OK ? List.of(standardAccountCombo.getValue()) : (dialogButton == discoverButtonType ? availableAccounts : null));

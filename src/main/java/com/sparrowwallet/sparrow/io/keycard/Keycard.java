@@ -1,6 +1,7 @@
 package com.sparrowwallet.sparrow.io.keycard;
 
 import com.sparrowwallet.drongo.crypto.ChildNumber;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.wallet.Keystore;
 import com.sparrowwallet.drongo.wallet.WalletModel;
 import com.sparrowwallet.sparrow.io.ImportException;
@@ -52,7 +53,11 @@ public class Keycard implements KeystoreCardImport {
     }
 
     @Override
-    public Keystore getKeystore(String pin, List<ChildNumber> derivation, StringProperty messageProperty) throws ImportException {
+    public Keystore getKeystore(PolicyType policyType, String pin, List<ChildNumber> derivation, StringProperty messageProperty) throws ImportException {
+        if(policyType == PolicyType.SINGLE_SP) {
+            throw new ImportException(getName() + " does not support receiving silent payments");
+        }
+
         if(!StringUtils.isNumeric(pin)) {
             throw new ImportException("PIN must be all digits.");
         }

@@ -6,6 +6,7 @@ import com.sparrowwallet.drongo.OsType;
 import com.sparrowwallet.drongo.OutputDescriptor;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.psbt.PSBT;
+import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanAddress;
 import com.sparrowwallet.drongo.wallet.StandardAccount;
 import com.sparrowwallet.drongo.wallet.WalletModel;
 import com.sparrowwallet.lark.DeviceException;
@@ -40,6 +41,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class Hwi {
     private static final Logger log = LoggerFactory.getLogger(Hwi.class);
@@ -48,6 +51,10 @@ public class Hwi {
     private static final String BITBOX_FILENAME = "bitbox02.json";
     private static final String TREZOR_FILENAME = "trezor.json";
 
+    //Serialises all USB device access, including the periodic enumeration which would otherwise interfere with an operation in progress on the same device
+    private static final ReentrantLock deviceLock = new ReentrantLock();
+
+    //Indicates a pin prompt has been shown on a device and not yet answered. Enumerating in this state clears the pin screen
     private static volatile boolean isPromptActive = false;
 
     private final Set<byte[]> newDeviceRegistrations = new HashSet<>();
@@ -64,15 +71,16 @@ public class Hwi {
     }
 
     private List<Device> enumerateUsb(String passphrase) throws ImportException {
+        deviceLock.lock();
         try {
             Lark lark = getLark(passphrase);
-            isPromptActive = true;
             return lark.enumerate().stream().map(Device::fromHardwareClient).toList();
         } catch(Throwable e) {
             log.error("Error enumerating USB devices", e);
             throw new ImportException(e.getMessage() == null || e.getMessage().isEmpty() ? "Error scanning, check devices are ready" : e.getMessage(), e);
         } finally {
             isPromptActive = false;
+            deviceLock.unlock();
         }
     }
 
@@ -97,6 +105,9 @@ public class Hwi {
                 //ignore
             } catch(CardException e) {
                 log.info("Error reading card", e);
+            } catch(Exception e) {
+                //a card is free to return any bytes it likes, so a malformed response can surface as any runtime exception
+                log.error("Error reading card", e);
             }
         }
 
@@ -104,6 +115,7 @@ public class Hwi {
     }
 
     public boolean promptPin(Device device) throws ImportException {
+        deviceLock.lock();
         try {
             Lark lark = getLark();
             boolean result = lark.promptPin(device.getType(), device.getPath());
@@ -114,24 +126,29 @@ public class Hwi {
         } catch(RuntimeException e) {
             log.error("Error prompting pin", e);
             throw e;
+        } finally {
+            deviceLock.unlock();
         }
     }
 
     public boolean sendPin(Device device, String pin) throws ImportException {
+        deviceLock.lock();
         try {
             Lark lark = getLark();
-            boolean result = lark.sendPin(device.getType(), device.getPath(), pin);
-            isPromptActive = false;
-            return result;
+            return lark.sendPin(device.getType(), device.getPath(), pin);
         } catch(DeviceException e) {
             throw new ImportException(e.getMessage(), e);
         } catch(RuntimeException e) {
             log.error("Error sending pin", e);
             throw e;
+        } finally {
+            isPromptActive = false;
+            deviceLock.unlock();
         }
     }
 
     public boolean togglePassphrase(Device device) throws ImportException {
+        deviceLock.lock();
         try {
             Lark lark = getLark();
             boolean result = lark.togglePassphrase(device.getType(), device.getPath());
@@ -142,39 +159,66 @@ public class Hwi {
         } catch(RuntimeException e) {
             log.error("Error toggling passphrase", e);
             throw e;
+        } finally {
+            deviceLock.unlock();
         }
     }
 
-    public Map<WalletType, String> getXpubs(Device device, String passphrase, Map<WalletType, String> accountDerivationPaths, Map<WalletType, String> accountXpubs) throws ImportException {
-        for(Map.Entry<WalletType, String> entry : accountDerivationPaths.entrySet()) {
-            accountXpubs.put(entry.getKey(), getXpub(device, passphrase, entry.getValue()));
+    public Map<WalletType, ExtendedKey> getXpubs(Device device, String passphrase, Map<WalletType, String> accountDerivationPaths, Map<WalletType, ExtendedKey> accountXpubs) throws ImportException {
+        deviceLock.lock();
+        try {
+            for(Map.Entry<WalletType, String> entry : accountDerivationPaths.entrySet()) {
+                accountXpubs.put(entry.getKey(), getXpub(device, passphrase, entry.getValue()));
+            }
+        } finally {
+            deviceLock.unlock();
         }
 
         return accountXpubs;
     }
 
-    public String getXpub(Device device, String passphrase, String derivationPath) throws ImportException {
+    public ExtendedKey getXpub(Device device, String passphrase, String derivationPath) throws ImportException {
+        deviceLock.lock();
         try {
             Lark lark = getLark(passphrase);
             ExtendedKey xpub = lark.getPubKeyAtPath(device.getType(), device.getPath(), derivationPath);
             isPromptActive = false;
-            return xpub.toString();
+            return xpub;
         } catch(DeviceException e) {
             throw new ImportException(e.getMessage(), e);
         } catch(RuntimeException e) {
             log.error("Error retrieving xpub", e);
             throw e;
+        } finally {
+            deviceLock.unlock();
+        }
+    }
+
+    public SilentPaymentScanAddress getSpscan(Device device, String passphrase, String derivationPath) throws ImportException {
+        deviceLock.lock();
+        try {
+            Lark lark = getLark(passphrase);
+            SilentPaymentScanAddress spscan = lark.getSpscanAtPath(device.getType(), device.getPath(), derivationPath);
+            isPromptActive = false;
+            return spscan;
+        } catch(DeviceException e) {
+            throw new ImportException(e.getMessage(), e);
+        } catch(RuntimeException e) {
+            log.error("Error retrieving spscan", e);
+            throw e;
+        } finally {
+            deviceLock.unlock();
         }
     }
 
     public String displayAddress(Device device, String passphrase, ScriptType scriptType, OutputDescriptor addressDescriptor,
                                  OutputDescriptor walletDescriptor, String walletName, byte[] walletRegistration) throws DisplayAddressException {
-        try {
-            if(!Arrays.asList(ScriptType.ADDRESSABLE_TYPES).contains(scriptType)) {
-                throw new IllegalArgumentException("Cannot display address for script type " + scriptType + ": Only addressable types supported");
-            }
+        if(!Arrays.asList(ScriptType.ADDRESSABLE_TYPES).contains(scriptType)) {
+            throw new IllegalArgumentException("Cannot display address for script type " + scriptType + ": Only addressable types supported");
+        }
 
-            isPromptActive = true;
+        deviceLock.lock();
+        try {
             Lark lark = getLark(passphrase, walletDescriptor, walletName, walletRegistration);
             String address = lark.displayAddress(device.getType(), device.getPath(), addressDescriptor);
             newDeviceRegistrations.addAll(lark.getWalletRegistrations().values());
@@ -186,13 +230,13 @@ public class Hwi {
             log.error("Error displaying address", e);
             throw e;
         } finally {
-            isPromptActive = false;
+            deviceLock.unlock();
         }
     }
 
     public String signMessage(Device device, String passphrase, String message, String derivationPath) throws SignMessageException {
+        deviceLock.lock();
         try {
-            isPromptActive = true;
             Lark lark = getLark(passphrase);
             return lark.signMessage(device.getType(), device.getPath(), message, derivationPath);
         } catch(DeviceException e) {
@@ -201,14 +245,14 @@ public class Hwi {
             log.error("Error signing message", e);
             throw e;
         } finally {
-            isPromptActive = false;
+            deviceLock.unlock();
         }
     }
 
     public PSBT signPSBT(Device device, String passphrase, PSBT psbt,
                          OutputDescriptor walletDescriptor, String walletName, byte[] walletRegistration) throws SignTransactionException {
+        deviceLock.lock();
         try {
-            isPromptActive = true;
             Lark lark = getLark(passphrase, walletDescriptor, walletName, walletRegistration);
             PSBT signed = lark.signTransaction(device.getType(), device.getPath(), psbt);
             newDeviceRegistrations.addAll(lark.getWalletRegistrations().values());
@@ -220,7 +264,7 @@ public class Hwi {
             log.error("Error signing PSBT", e);
             throw e;
         } finally {
-            isPromptActive = false;
+            deviceLock.unlock();
         }
     }
 
@@ -254,7 +298,7 @@ public class Hwi {
     private static void deleteHwiDir() {
         try {
             if(OsType.getCurrent() == OsType.MACOS || OsType.getCurrent() == OsType.WINDOWS) {
-                File hwiHomeDir = new File(Storage.getSparrowDir(), HWI_HOME_DIR);
+                File hwiHomeDir = new File(Storage.getCacheDir(), HWI_HOME_DIR);
                 if(hwiHomeDir.exists()) {
                     IOUtils.deleteDirectory(hwiHomeDir);
                 }
@@ -293,9 +337,13 @@ public class Hwi {
         protected Task<List<Device>> createTask() {
             return new Task<>() {
                 protected List<Device> call() throws ImportException {
-                    if(!isPromptActive) {
-                        Hwi hwi = new Hwi();
-                        return hwi.enumerate(passphrase);
+                    if(!isPromptActive && deviceLock.tryLock()) {
+                        try {
+                            Hwi hwi = new Hwi();
+                            return hwi.enumerate(passphrase);
+                        } finally {
+                            deviceLock.unlock();
+                        }
                     }
 
                     return null;
@@ -421,7 +469,7 @@ public class Hwi {
         }
     }
 
-    public static class GetXpubService extends Service<String> {
+    public static class GetXpubService extends Service<ExtendedKey> {
         private final Device device;
         private final String passphrase;
         private final String derivationPath;
@@ -433,9 +481,9 @@ public class Hwi {
         }
 
         @Override
-        protected Task<String> createTask() {
+        protected Task<ExtendedKey> createTask() {
             return new Task<>() {
-                protected String call() throws ImportException {
+                protected ExtendedKey call() throws ImportException {
                     Hwi hwi = new Hwi();
                     return hwi.getXpub(device, passphrase, derivationPath);
                 }
@@ -443,7 +491,29 @@ public class Hwi {
         }
     }
 
-    public static class GetXpubsService extends Service<Map<WalletType, String>> {
+    public static class GetSpscanService extends Service<SilentPaymentScanAddress> {
+        private final Device device;
+        private final String passphrase;
+        private final String derivationPath;
+
+        public GetSpscanService(Device device, String passphrase, String derivationPath) {
+            this.device = device;
+            this.passphrase = passphrase;
+            this.derivationPath = derivationPath;
+        }
+
+        @Override
+        protected Task<SilentPaymentScanAddress> createTask() {
+            return new Task<>() {
+                protected SilentPaymentScanAddress call() throws ImportException {
+                    Hwi hwi = new Hwi();
+                    return hwi.getSpscan(device, passphrase, derivationPath);
+                }
+            };
+        }
+    }
+
+    public static class GetXpubsService extends Service<Map<WalletType, ExtendedKey>> {
         private final Device device;
         private final String passphrase;
         private final Map<WalletType, String> accountDerivationPaths;
@@ -455,13 +525,13 @@ public class Hwi {
         }
 
         @Override
-        protected Task<Map<WalletType, String>> createTask() {
+        protected Task<Map<WalletType, ExtendedKey>> createTask() {
             return new Task<>() {
-                protected Map<WalletType, String> call() throws ImportException {
+                protected Map<WalletType, ExtendedKey> call() throws ImportException {
                     Hwi hwi = new Hwi();
                     updateProgress(0, accountDerivationPaths.size());
-                    ObservableMap<WalletType, String> accountXpubs = FXCollections.observableMap(new LinkedHashMap<>());
-                    accountXpubs.addListener((MapChangeListener<? super WalletType, ? super String>) _ -> updateProgress(accountXpubs.size(), accountDerivationPaths.size()));
+                    ObservableMap<WalletType, ExtendedKey> accountXpubs = FXCollections.observableMap(new LinkedHashMap<>());
+                    accountXpubs.addListener((MapChangeListener<? super WalletType, ? super ExtendedKey>) _ -> updateProgress(accountXpubs.size(), accountDerivationPaths.size()));
                     return hwi.getXpubs(device, passphrase, accountDerivationPaths, accountXpubs);
                 }
             };
@@ -504,26 +574,40 @@ public class Hwi {
     }
 
     private static final class BitBoxFxNoiseConfig extends BitBoxFileNoiseConfig {
+        private static final AtomicBoolean attestationWarningShown = new AtomicBoolean(false);
+
         private BitBoxPairingDialog pairingDialog;
 
         public BitBoxFxNoiseConfig() {
-            super(Path.of(Storage.getSparrowHome().getAbsolutePath(), LARK_HOME_DIR, BITBOX_FILENAME).toFile());
+            super(Path.of(Storage.getDataHome().getAbsolutePath(), LARK_HOME_DIR, BITBOX_FILENAME).toFile());
+        }
+
+        @Override
+        public void attestationCheck(boolean result) {
+            if(!result) {
+                log.warn("BitBox02 attestation check failed, device may not be genuine");
+                //Devices are opened repeatedly while enumerating, so warn only once per session
+                if(attestationWarningShown.compareAndSet(false, true)) {
+                    Platform.runLater(() -> AppServices.showWarningDialog("BitBox02 Attestation Failed",
+                            "This BitBox02 did not pass the attestation check, which means it may not be a genuine device.\n\n" +
+                                    "Do not use it to store funds until you have verified it externally."));
+                }
+            }
         }
 
         @Override
         public boolean showPairing(String code, DeviceResponse response) throws DeviceException {
             CountDownLatch latch = new CountDownLatch(1);
             AtomicBoolean confirmedDevice = new AtomicBoolean(false);
+            AtomicReference<DeviceException> deviceException = new AtomicReference<>();
 
             Thread showPairingDeviceThread = new Thread(() -> {
                 try {
-                    isPromptActive = true;
                     confirmedDevice.set(response.call());
-                    latch.countDown();
                 } catch(DeviceException e) {
-                    throw new RuntimeException(e);
+                    deviceException.set(e);
                 } finally {
-                    isPromptActive = false;
+                    latch.countDown();
                 }
             });
             showPairingDeviceThread.start();
@@ -544,10 +628,14 @@ public class Hwi {
                 if(pairingDialog != null && pairingDialog.isShowing()) {
                     pairingDialog.setResult(ButtonType.APPLY);
                 }
-                if(!confirmedDevice.get()) {
+                if(deviceException.get() == null && !confirmedDevice.get()) {
                     AppServices.showWarningDialog("Pairing Refused", "Pairing was refused on the device.");
                 }
             });
+
+            if(deviceException.get() != null) {
+                throw deviceException.get();
+            }
 
             return confirmedDevice.get();
         }
@@ -557,7 +645,7 @@ public class Hwi {
         private String deviceInfo;
 
         public TrezorFxNoiseConfig() {
-            super(Path.of(Storage.getSparrowHome().getAbsolutePath(), LARK_HOME_DIR, TREZOR_FILENAME).toFile());
+            super(Path.of(Storage.getDataHome().getAbsolutePath(), LARK_HOME_DIR, TREZOR_FILENAME).toFile());
         }
 
         @Override
@@ -584,13 +672,10 @@ public class Hwi {
             });
 
             try {
-                isPromptActive = true;
                 return future.get(); // Block until dialog is closed
             } catch (InterruptedException | ExecutionException e) {
                 Thread.currentThread().interrupt();
                 return null;
-            } finally {
-                isPromptActive = false;
             }
         }
 
@@ -604,13 +689,10 @@ public class Hwi {
             });
 
             try {
-                isPromptActive = true;
                 return future.get() == ButtonType.YES; // Block until dialog is closed
             } catch (InterruptedException | ExecutionException e) {
                 Thread.currentThread().interrupt();
                 return false;
-            } finally {
-                isPromptActive = false;
             }
         }
 

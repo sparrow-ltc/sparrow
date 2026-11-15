@@ -19,6 +19,7 @@ import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.net.Auth47;
 import com.sparrowwallet.drongo.protocol.BlockHeader;
 import com.sparrowwallet.drongo.protocol.ScriptType;
+import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.protocol.Transaction;
 import com.sparrowwallet.drongo.psbt.PSBT;
 import com.sparrowwallet.drongo.uri.BitcoinURI;
@@ -29,22 +30,30 @@ import com.sparrowwallet.sparrow.net.*;
 import io.reactivex.rxjavafx.schedulers.JavaFxScheduler;
 import io.reactivex.subjects.PublishSubject;
 import javafx.application.Application;
+import javafx.application.ColorScheme;
 import javafx.application.Platform;
 import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.ReadOnlyProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.ObservableValue;
+import javafx.collections.ListChangeListener;
+import javafx.collections.ObservableList;
 import javafx.concurrent.ScheduledService;
 import javafx.concurrent.Service;
 import javafx.concurrent.Task;
+import javafx.event.EventHandler;
 import javafx.concurrent.Worker;
 import javafx.fxml.FXMLLoader;
+import javafx.scene.AccessibleRole;
 import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
+import javafx.scene.TraversalDirection;
 import javafx.scene.control.*;
 import javafx.scene.control.Dialog;
 import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.text.Font;
 import javafx.stage.Screen;
@@ -69,9 +78,13 @@ import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static com.sparrowwallet.sparrow.AppController.CONNECTION_FAILED_PREFIX;
 import static com.sparrowwallet.sparrow.control.DownloadVerifierDialog.*;
 
 public class AppServices {
@@ -94,6 +107,17 @@ public class AppServices {
     private static final List<Double> LONG_FEE_RATES_RANGE = List.of(1d, 2d, 4d, 8d, 16d, 32d, 64d, 128d, 256d, 512d, 1024d, 2048d, 4096d, 8192d);
     public static final double FALLBACK_FEE_RATE = 20000d / 1000;
     public static final double TESTNET_FALLBACK_FEE_RATE = 1000d / 1000;
+    private static final EventHandler<javafx.scene.input.KeyEvent> FORWARD_UNUSED_ESCAPE = event -> {
+        if(event.getCode() == KeyCode.ESCAPE && event.getTarget() instanceof Node node && node.getParent() != null && isEscapeUnused(node)) {
+            event.consume();
+            node.getParent().fireEvent(event);
+        }
+    };
+    private static final ChangeListener<Boolean> NOT_FOCUS_TRAVERSABLE = (observable, wasTraversable, traversable) -> {
+        if(traversable) {
+            ((Node)((ReadOnlyProperty<?>)observable).getBean()).setFocusTraversable(false);
+        }
+    };
 
     private static AppServices INSTANCE;
 
@@ -127,9 +151,9 @@ public class AppServices {
 
     private ScheduledService<Void> preventSleepService;
 
-    private static Integer currentBlockHeight;
+    private static volatile ChainTip announcedTip;
 
-    private static BlockHeader latestBlockHeader;
+    private static volatile boolean systemDarkTheme;
 
     private static final Map<Integer, BlockSummary> blockSummaries = new ConcurrentHashMap<>();
 
@@ -151,7 +175,7 @@ public class AppServices {
 
     private static final List<URI> argUris = new ArrayList<>();
 
-    private static final Map<Address, BitcoinURI> payjoinURIs = new HashMap<>();
+    private static final Map<Sha256Hash, BitcoinURI> payjoinURIs = new HashMap<>();
 
     private final ChangeListener<Boolean> onlineServicesListener = new ChangeListener<>() {
         @Override
@@ -205,6 +229,7 @@ public class AppServices {
     public void start() {
         Config config = Config.get();
         connectionService = createConnectionService();
+        registerHeaderSyncService();
         feeRatesService = createFeeRatesService();
         ratesService = createRatesService(config.getExchangeSource(), config.getFiatCurrency());
         versionCheckService = createVersionCheckService();
@@ -332,7 +357,10 @@ public class AppServices {
                             crtFile = Storage.getCaCertificateFile(tlsServerException.getServer().getHost());
                         }
                         if(crtFile != null) {
-                            Optional<ButtonType> optButton = AppServices.showErrorDialog("SSL Handshake Failed", "The certificate provided by the server at " + tlsServerException.getServer().getHost() + " appears to have changed." +
+                            Date expiredAt = TcpOverTlsTransport.getExpiredAt(crtFile);
+                            String problem = expiredAt != null ? "The saved certificate for the server at " + tlsServerException.getServer().getHost() + " expired at " + expiredAt + ", and the certificate the server provided could not be verified."
+                                    : "The certificate provided by the server at " + tlsServerException.getServer().getHost() + " appears to have changed.";
+                            Optional<ButtonType> optButton = AppServices.showErrorDialog("SSL Handshake Failed", problem +
                                     "\n\nThis may be simply due to a certificate renewal, or it may indicate a man-in-the-middle attack." +
                                     "\n\nDo you still want to proceed?", ButtonType.NO, ButtonType.YES);
                             if(optButton.isPresent() && optButton.get() == ButtonType.YES) {
@@ -367,15 +395,18 @@ public class AppServices {
             onlineProperty.setValue(false);
             onlineProperty.addListener(onlineServicesListener);
 
+            log.debug("Connection failed", failEvent.getSource().getException());
             if(Config.get().getServerType() == ServerType.PUBLIC_ELECTRUM_SERVER) {
-                Config.get().changePublicServer();
-                connectionService.setPeriod(Duration.seconds(PUBLIC_SERVER_RETRY_PERIOD_SECS));
+                boolean changed = changePublicServer();
+                connectionService.setPeriod(changed ? Duration.seconds(PUBLIC_SERVER_RETRY_PERIOD_SECS) : Duration.seconds(PRIVATE_SERVER_RETRY_PERIOD_SECS));
+                EventManager.get().post(new ConnectionFailedEvent(failEvent.getSource().getException()));
+                if(!changed) {
+                    Platform.runLater(() -> EventManager.get().post(new StatusEvent(CONNECTION_FAILED_PREFIX + "No public servers available that can serve the open wallets, retrying later...")));
+                }
             } else {
                 connectionService.setPeriod(Duration.seconds(PRIVATE_SERVER_RETRY_PERIOD_SECS));
+                EventManager.get().post(new ConnectionFailedEvent(failEvent.getSource().getException()));
             }
-
-            log.debug("Connection failed", failEvent.getSource().getException());
-            EventManager.get().post(new ConnectionFailedEvent(failEvent.getSource().getException()));
         });
 
         return connectionService;
@@ -388,6 +419,25 @@ public class AppServices {
         });
 
         return feeRatesService;
+    }
+
+    /**
+     * The header sync service is driven entirely by the events it subscribes to - started by an announced tip, cancelled on disconnection - so nothing
+     * here holds it or restarts it. Registering it with the event bus is what keeps it reachable for the life of the session.
+     */
+    private void registerHeaderSyncService() {
+        ElectrumServer.HeaderSyncService headerSyncService = new ElectrumServer.HeaderSyncService();
+        headerSyncService.setPeriod(Duration.seconds(ElectrumServer.HeaderSyncService.RETRY_PERIOD_SECS));
+        headerSyncService.setRestartOnFailure(true);
+        EventManager.get().register(headerSyncService);
+
+        //The service is started by the tip it is told about, so a successful run has nothing left to do until the next one
+        headerSyncService.setOnSucceeded(successEvent -> {
+            headerSyncService.cancel();
+        });
+        headerSyncService.setOnFailed(failEvent -> {
+            log.warn("Failed to sync block headers, retrying in " + ElectrumServer.HeaderSyncService.RETRY_PERIOD_SECS + "s", failEvent.getSource().getException());
+        });
     }
 
     private ExchangeSource.RatesService createRatesService(ExchangeSource exchangeSource, Currency currency) {
@@ -428,7 +478,7 @@ public class AppServices {
         enumerateService.setOnSucceeded(workerStateEvent -> {
             List<Device> devices = enumerateService.getValue();
 
-            //Null devices are returned if the app is currently prompting for a pin. Otherwise, the enumerate clears the pin screen
+            //Null devices are returned if the app is currently prompting for a pin (the enumerate would clear the pin screen) or another device operation is in progress
             if(devices != null) {
                 //If another instance of HWI is currently accessing the usb interface, HWI returns empty device models. Ignore this run if that happens
                 List<Device> validDevices = devices.stream().filter(device -> device.getModel() != null).collect(Collectors.toList());
@@ -452,7 +502,9 @@ public class AppServices {
         torService.setOnSucceeded(workerStateEvent -> {
             Tor.setDefault(torService.getValue());
             torService.cancel();
-            restartServices();
+            if(onlineProperty.get() || Config.get().getMode() == Mode.ONLINE) {
+                restartServices();
+            }
             EventManager.get().post(new TorReadyStatusEvent());
         });
         torService.setOnFailed(workerStateEvent -> {
@@ -679,6 +731,52 @@ public class AppServices {
         });
     }
 
+    //Text areas holding keys, addresses, scripts or messages to sign never need a typed tab character, so Tab moves focus on rather than trapping keyboard users
+    public static void moveFocusOnTab(Node node) {
+        node.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+            if(event.getCode() == KeyCode.TAB && !event.isShortcutDown() && !event.isControlDown() && !event.isAltDown()) {
+                node.requestFocusTraversal(event.isShiftDown() ? TraversalDirection.PREVIOUS : TraversalDirection.NEXT);
+                event.consume();
+            }
+        });
+    }
+
+    //Menu buttons consume Escape even when their menu is closed, and tables consume it even when no cell is being edited, so Escape on a
+    //split button or in a table such as the search results did not close its dialog. Like a combo box, these pass Escape on to their parent.
+    public static void forwardUnusedEscape() {
+        Window.getWindows().addListener((ListChangeListener<Window>)change -> {
+            while(change.next()) {
+                for(Window window : change.getAddedSubList()) {
+                    window.removeEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, FORWARD_UNUSED_ESCAPE);
+                    window.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, FORWARD_UNUSED_ESCAPE);
+                }
+            }
+        });
+    }
+
+    private static boolean isEscapeUnused(Node node) {
+        return switch(node) {
+            case MenuButton menuButton -> !menuButton.isShowing();
+            case TableView<?> tableView -> tableView.getEditingCell() == null;
+            case TreeTableView<?> treeTableView -> treeTableView.getEditingCell() == null;
+            default -> false;
+        };
+    }
+
+    //Charts make every data point a Tab stop while a screen reader is on, including points created before it started.
+    //The charts here are read as a one-line summary, so their points are kept out of the Tab order.
+    public static void keepChartPointsOutOfTabOrder(ObservableList<Node> plotChildren) {
+        plotChildren.addListener((ListChangeListener<Node>)change -> {
+            while(change.next()) {
+                for(Node node : change.getAddedSubList()) {
+                    node.focusTraversableProperty().removeListener(NOT_FOCUS_TRAVERSABLE);
+                    node.focusTraversableProperty().addListener(NOT_FOCUS_TRAVERSABLE);
+                    node.setFocusTraversable(false);
+                }
+            }
+        });
+    }
+
     public Map<Wallet, Storage> getOpenWallets() {
         Map<Wallet, Storage> openWallets = new LinkedHashMap<>();
         for(List<WalletTabData> walletTabDataList : walletWindows.values()) {
@@ -728,16 +826,40 @@ public class AppServices {
         return onlineProperty.get() && get().connectionService != null && get().connectionService.isConnected();
     }
 
+    public static boolean cancelConnection() {
+        if(get().connectionService != null && get().connectionService.isRunning()) {
+            onlineProperty.set(false);
+            get().connectionService.cancel();
+            return true;
+        }
+
+        return false;
+    }
+
     public static BooleanProperty onlineProperty() {
         return onlineProperty;
     }
 
     public static Integer getCurrentBlockHeight() {
-        return currentBlockHeight;
+        ChainTip tip = announcedTip;
+        return tip == null ? null : tip.height();
     }
 
     public static BlockHeader getLatestBlockHeader() {
-        return latestBlockHeader;
+        ChainTip tip = announcedTip;
+        return tip == null ? null : tip.header();
+    }
+
+    /**
+     * The chain tip as the connected server last announced it, whose height and header are written together. A reader needing both must take them from
+     * one of these, since the two accessors above read the tip separately and can straddle a new block, pairing a new height with the previous header.
+     */
+    public static ChainTip getAnnouncedTip() {
+        return announcedTip;
+    }
+
+    public static void setAnnouncedTip(ChainTip announcedTip) {
+        AppServices.announcedTip = announcedTip;
     }
 
     public static Map<Integer, BlockSummary> getBlockSummaries() {
@@ -833,23 +955,29 @@ public class AppServices {
         return devices == null ? new ArrayList<>() : devices;
     }
 
-    public static BitcoinURI getPayjoinURI(Address address) {
-        return payjoinURIs.get(address);
+    public static BitcoinURI getPayjoinURI(PSBT psbt) {
+        return psbt == null ? null : payjoinURIs.get(psbt.getTransaction().calculateTxId(false));
     }
 
-    public static void addPayjoinURI(BitcoinURI bitcoinURI) {
+    public static void addPayjoinURI(PSBT psbt, BitcoinURI bitcoinURI) {
         if(bitcoinURI.getPayjoinUrl() == null || bitcoinURI.getAddress() == null) {
             throw new IllegalArgumentException("Not a valid payjoin URI");
         }
-        payjoinURIs.put(bitcoinURI.getAddress(), bitcoinURI);
+        payjoinURIs.put(psbt.getTransaction().calculateTxId(false), bitcoinURI);
     }
 
-    public static void clearPayjoinURI(Address address) {
-        payjoinURIs.remove(address);
+    public static void clearPayjoinURI(PSBT psbt) {
+        if(psbt != null) {
+            payjoinURIs.remove(psbt.getTransaction().calculateTxId(false));
+        }
     }
 
     public static void clearTransactionHistoryCache(Wallet wallet) {
         ElectrumServer.clearRetrievedScriptHashes(wallet);
+
+        if(wallet.getPolicyType() == PolicyType.SINGLE_SP && wallet.isValid()) {
+            ElectrumServer.releaseSilentPaymentSubscription(wallet.getSilentPaymentScanAddress());
+        }
 
         for(Wallet childWallet : wallet.getChildWallets()) {
             if(childWallet.isNested()) {
@@ -860,6 +988,22 @@ public class AppServices {
 
     public static boolean isWalletFile(File file) {
         return Storage.isWalletFile(file);
+    }
+
+    public boolean changePublicServer() {
+        List<PolicyType> policyTypes = getOpenWallets().keySet().stream().map(Wallet::getPolicyType).filter(Objects::nonNull).collect(Collectors.toList());
+        return changePublicServer(policyTypes.isEmpty() ? List.of(PolicyType.SINGLE_HD) : policyTypes);
+    }
+
+    private boolean changePublicServer(List<PolicyType> policyTypes) {
+        Config config = Config.get();
+        List<Server> otherServers = PublicElectrumServer.getServers().stream().filter(pes -> pes.supportsAllPolicyTypes(policyTypes))
+                .map(PublicElectrumServer::getServer).filter(server -> !server.equals(config.getPublicElectrumServer())).collect(Collectors.toList());
+        if(!otherServers.isEmpty()) {
+            config.setPublicElectrumServer(otherServers.get(ThreadLocalRandom.current().nextInt(otherServers.size())));
+            return true;
+        }
+        return false;
     }
 
     public static Optional<ButtonType> showWarningDialog(String title, String content, ButtonType... buttons) {
@@ -886,16 +1030,60 @@ public class AppServices {
         return getInteractionServices().showAlert(title, content, alertType, graphic, buttons);
     }
 
+    public static void monitorSystemTheme() {
+        try {
+            Platform.Preferences preferences = Platform.getPreferences();
+            systemDarkTheme = preferences.getColorScheme() == ColorScheme.DARK;
+            preferences.colorSchemeProperty().addListener((observable, oldValue, colorScheme) -> {
+                systemDarkTheme = colorScheme == ColorScheme.DARK;
+                if(Config.get().getTheme() == null || Config.get().getTheme() == Theme.SYSTEM) {
+                    EventManager.get().post(new ThemeChangedEvent(getActiveTheme()));
+                }
+            });
+        } catch(Exception e) {
+            log.warn("Could not read the system color scheme", e);
+        }
+    }
+
+    public static Theme getActiveTheme() {
+        Theme theme = Config.get().getTheme();
+        if(theme == null || theme == Theme.SYSTEM) {
+            return systemDarkTheme ? Theme.DARK : Theme.LIGHT;
+        }
+
+        return theme;
+    }
+
+    public static boolean isDarkTheme() {
+        return getActiveTheme() == Theme.DARK;
+    }
+
     public static void setStageIcon(Window window) {
         Stage stage = (Stage)window;
         stage.getIcons().add(getWindowIcon());
 
         if(stage.getScene() != null) {
-            if(Config.get().getTheme() == Theme.DARK) {
-                stage.getScene().getStylesheets().add(AppServices.class.getResource("darktheme.css").toExternalForm());
+            String darkCss = AppServices.class.getResource("darktheme.css").toExternalForm();
+            if(isDarkTheme() && !stage.getScene().getStylesheets().contains(darkCss)) {
+                stage.getScene().getStylesheets().add(darkCss);
             }
             if(Config.get().isChunkAddresses()) {
                 stage.getScene().getRoot().getStyleClass().add("chunk-addresses");
+            }
+            //macOS has no accessibility role for DIALOG and exposes it as an unknown element around the whole dialog
+            if(OsType.getCurrent() == OsType.MACOS && stage.getScene().getRoot().getAccessibleRole() == AccessibleRole.DIALOG) {
+                stage.getScene().getRoot().setAccessibleRole(AccessibleRole.PARENT);
+            }
+            //The icon an alert style puts in the dialog header is otherwise read as an unnamed image
+            if(stage.getScene().getRoot() instanceof DialogPane dialogPane) {
+                Consumer<Node> nameAlertIcon = graphic -> {
+                    if(graphic instanceof ImageView && graphic.getAccessibleText() == null) {
+                        Stream.of("warning", "error", "information", "confirmation").filter(dialogPane.getStyleClass()::contains).findFirst()
+                                .ifPresent(kind -> graphic.setAccessibleText(Character.toUpperCase(kind.charAt(0)) + kind.substring(1)));
+                    }
+                };
+                dialogPane.graphicProperty().addListener((_, _, graphic) -> nameAlertIcon.accept(graphic));
+                nameAlertIcon.accept(dialogPane.getGraphic());
             }
         }
     }
@@ -1066,7 +1254,7 @@ public class AppServices {
             if(wallet != null) {
                 final Wallet sendingWallet = wallet;
                 EventManager.get().post(new SendActionEvent(sendingWallet, new ArrayList<>(sendingWallet.getSpendableUtxos().keySet()), true));
-                Platform.runLater(() -> EventManager.get().post(new SendPaymentsEvent(sendingWallet, List.of(bitcoinURI.toPayment()))));
+                Platform.runLater(() -> EventManager.get().post(new SendPaymentsEvent(sendingWallet, List.of(bitcoinURI.toPayment(sendingWallet)), bitcoinURI)));
             }
         } catch(Exception e) {
             showErrorDialog("Not a valid bitcoin URI", e.getMessage());
@@ -1077,7 +1265,7 @@ public class AppServices {
         try {
             Auth47 auth47 = new Auth47(uri);
             List<ScriptType> scriptTypes = PaymentCode.SEGWIT_SCRIPT_TYPES;
-            Wallet wallet = selectWallet(List.of(PolicyType.SINGLE), scriptTypes, false, true, "login to " + auth47.getCallback().getHost(), true);
+            Wallet wallet = selectWallet(List.of(PolicyType.SINGLE_HD), scriptTypes, false, true, auth47.getLoginMessage(), true);
 
             if(wallet != null) {
                 try {
@@ -1097,8 +1285,8 @@ public class AppServices {
     private static void openLnurlAuthUri(URI uri) {
         try {
             LnurlAuth lnurlAuth = new LnurlAuth(uri);
-            List<ScriptType> scriptTypes = ScriptType.getAddressableScriptTypes(PolicyType.SINGLE);
-            Wallet wallet = selectWallet(List.of(PolicyType.SINGLE), scriptTypes, true, true, lnurlAuth.getLoginMessage(), true);
+            List<ScriptType> scriptTypes = ScriptType.getAddressableScriptTypes(PolicyType.SINGLE_HD);
+            Wallet wallet = selectWallet(List.of(PolicyType.SINGLE_HD), scriptTypes, true, true, lnurlAuth.getLoginMessage(), true);
 
             if(wallet != null) {
                 if(wallet.isEncrypted()) {
@@ -1121,7 +1309,6 @@ public class AppServices {
                                 showErrorDialog("Error authenticating", "Failed to authenticate.\n\n" + e.getMessage());
                             } finally {
                                 key.clear();
-                                encryptionFullKey.clear();
                                 password.get().clear();
                             }
                         });
@@ -1212,6 +1399,7 @@ public class AppServices {
 
     public static boolean isWhirlpoolCompatible(Wallet wallet) {
         return WHIRLPOOL_NETWORKS.contains(Network.get())
+                && wallet.getPolicyType() == PolicyType.SINGLE_HD
                 && wallet.getScriptType() != ScriptType.P2TR    //Taproot not yet supported
                 && wallet.getKeystores().size() == 1
                 && wallet.getKeystores().get(0).hasSeed()
@@ -1222,6 +1410,7 @@ public class AppServices {
 
     public static boolean isWhirlpoolPostmixCompatible(Wallet wallet) {
         return WHIRLPOOL_NETWORKS.contains(Network.get())
+                && wallet.getPolicyType() == PolicyType.SINGLE_HD
                 && wallet.getScriptType() != ScriptType.P2TR    //Taproot not yet supported
                 && wallet.getKeystores().size() == 1
                 && wallet.getKeystores().getFirst().getWalletModel() != WalletModel.BITBOX_02; //BitBox02 does not support high account numbers
@@ -1255,13 +1444,12 @@ public class AppServices {
 
     @Subscribe
     public void newConnection(ConnectionEvent event) {
-        currentBlockHeight = event.getBlockHeight();
-        System.setProperty(Network.BLOCK_HEIGHT_PROPERTY, Integer.toString(currentBlockHeight));
+        setAnnouncedTip(new ChainTip(event.getBlockHeight(), event.getBlockHeader()));
+        System.setProperty(Network.BLOCK_HEIGHT_PROPERTY, Integer.toString(event.getBlockHeight()));
         if(getConfiguredMinimumRelayFeeRate(Config.get()) == null) {
             minimumRelayFeeRate = event.getMinimumRelayFeeRate() == null ? Transaction.DEFAULT_MIN_RELAY_FEE : event.getMinimumRelayFeeRate();
         }
         serverMinimumRelayFeeRate = event.getMinimumRelayFeeRate();
-        latestBlockHeader = event.getBlockHeader();
         Config.get().addRecentServer();
 
         FeeRatesSource feeRatesSource = Config.get().getFeeRatesSource();
@@ -1270,7 +1458,7 @@ public class AppServices {
             fetchFeeRates();
         }
 
-        if(!blockSummaries.containsKey(currentBlockHeight)) {
+        if(!blockSummaries.containsKey(getCurrentBlockHeight())) {
             fetchBlockSummaries(Collections.emptyList());
         }
     }
@@ -1282,9 +1470,8 @@ public class AppServices {
 
     @Subscribe
     public void newBlock(NewBlockEvent event) {
-        currentBlockHeight = event.getHeight();
-        System.setProperty(Network.BLOCK_HEIGHT_PROPERTY, Integer.toString(currentBlockHeight));
-        latestBlockHeader = event.getBlockHeader();
+        setAnnouncedTip(new ChainTip(event.getHeight(), event.getBlockHeader()));
+        System.setProperty(Network.BLOCK_HEIGHT_PROPERTY, Integer.toString(event.getHeight()));
         String status = "Updating to new block height " + event.getHeight();
         EventManager.get().post(new StatusEvent(status));
         newBlockSubject.onNext(event);
@@ -1293,8 +1480,9 @@ public class AppServices {
     @Subscribe
     public void blockSummary(BlockSummaryEvent event) {
         blockSummaries.putAll(event.getBlockSummaryMap());
-        if(AppServices.currentBlockHeight != null) {
-            blockSummaries.keySet().removeIf(height -> AppServices.currentBlockHeight - height > 5);
+        Integer currentBlockHeight = getCurrentBlockHeight();
+        if(currentBlockHeight != null) {
+            blockSummaries.keySet().removeIf(height -> currentBlockHeight - height > 5);
         }
         nextBlockMedianFeeRate = event.getNextBlockMedianFeeRate();
     }
@@ -1457,10 +1645,81 @@ public class AppServices {
     @Subscribe
     public void walletHistoryFailed(WalletHistoryFailedEvent event) {
         if(Config.get().getServerType() == ServerType.PUBLIC_ELECTRUM_SERVER && isConnected()) {
+            String currentName = Config.get().getServerDisplayName();
             onlineProperty.set(false);
-            log.warn("Failed to fetch wallet history from " + Config.get().getServerDisplayName() + ", reconnecting to another server...");
-            Config.get().changePublicServer();
+            boolean changed = changePublicServer();
+            if(changed) {
+                log.warn("Failed to fetch wallet history from " + currentName + ", reconnecting to another server...");
+            } else {
+                log.warn("Failed to fetch wallet history from " + currentName + ", retrying later");
+                connectionService.setDelay(Duration.seconds(PRIVATE_SERVER_RETRY_PERIOD_SECS));
+                EventManager.get().post(new StatusEvent("Wallet load failed: No other public servers available that can serve the open wallets, retrying later..."));
+            }
             onlineProperty.set(true);
+        }
+    }
+
+    @Subscribe
+    public void transactionProofsFailed(TransactionProofsFailedEvent event) {
+        showProofsDialog(event, "Transaction Verification Failed", describeProofs(event.getReferences())
+                + (event.getReferences().size() == 1 ? " but the proof of inclusion it supplied does not match that block." : " but the proofs of inclusion it supplied do not match those blocks.")
+                + " This means the server is either faulty or dishonest, and what it reported may not have been confirmed at all.");
+    }
+
+    @Subscribe
+    public void transactionProofsRefused(TransactionProofsRefusedEvent event) {
+        showProofsDialog(event, "Transaction Verification Refused", describeProofs(event.getReferences())
+                + (event.getReferences().size() == 1 ? " which then declined to prove it at that height." : " which then declined to prove them at those heights.")
+                + " A server contradicting itself in this way may be faulty or overloaded, and what it reported cannot be taken as confirmed.");
+    }
+
+    @Subscribe
+    public void unsignedTransactions(UnsignedTransactionsEvent event) {
+        String firstId = event.getTxids().iterator().next().toString().substring(0, 8) + "..";
+        String content = (event.getTxids().size() == 1 ? "Transaction " + firstId + " was" : event.getTxids().size() + " transactions, the first being " + firstId + ", were")
+                + " reported by the connected server as spending from " + event.getWallet().getFullName() + " but " + (event.getTxids().size() == 1 ? "is" : "are")
+                + " not validly signed, and " + (event.getTxids().size() == 1 ? "has" : "have") + " not been added to the wallet."
+                + " This means the server is either faulty or dishonest.\n\nConsider switching servers.";
+        Platform.runLater(() -> showErrorDialog("Invalid Transaction", content));
+    }
+
+    private void showProofsDialog(TransactionProofsEvent event, String title, String content) {
+        Platform.runLater(() -> {
+            if(event.getWallet() == null) {
+                //Reached outside any wallet, so there is no history holding it and nothing to refresh: it is shown at the height the server reported,
+                //marked as unproven, and switching servers is the only thing that puts the question to anyone else
+                showErrorDialog(title, content + " It is shown at that height marked unverified.\n\nConsider switching servers.");
+            } else {
+                ButtonType refreshButton = new ButtonType("Refresh Wallet", ButtonBar.ButtonData.OK_DONE);
+                Optional<ButtonType> optType = showErrorDialog(title, content + (event.getReferences().size() == 1 ? " It is" : " They are")
+                        + " shown as unconfirmed until verified.\n\nConsider switching servers, and refreshing the wallet afterwards.",
+                        ButtonType.CANCEL, refreshButton);
+                if(optType.isPresent() && optType.get() == refreshButton) {
+                    EventManager.get().post(new RequestWalletRefreshEvent(event.getWallet()));
+                }
+            }
+        });
+    }
+
+    private static String describeProofs(Set<BlockTransactionHash> references) {
+        BlockTransactionHash first = references.iterator().next();
+        String firstId = first.getHashAsString().substring(0, 8) + "..";
+        if(references.size() == 1) {
+            return "Transaction " + firstId + " was reported as confirmed in block " + first.getHeight() + " by the connected server,";
+        }
+
+        return references.size() + " transactions, the first being " + firstId + " in block " + first.getHeight()
+                + ", were reported as confirmed by the connected server,";
+    }
+
+    @Subscribe
+    public void silentPaymentsUnsubscribe(SilentPaymentsUnsubscribeEvent event) {
+        if(isConnected()) {
+            ElectrumServer.SilentPaymentsUnsubscribeService unsubscribeService = new ElectrumServer.SilentPaymentsUnsubscribeService(event.getScanAddress());
+            unsubscribeService.setOnFailed(workerStateEvent -> {
+                log.warn("Failed to unsubscribe silent payments for " + event.getScanAddress().getAddress(), workerStateEvent.getSource().getException());
+            });
+            unsubscribeService.start();
         }
     }
 }

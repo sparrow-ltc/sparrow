@@ -1,12 +1,9 @@
 package com.sparrowwallet.sparrow.control;
 
 import com.sparrowwallet.sparrow.AppServices;
-import com.sparrowwallet.sparrow.Theme;
-import com.sparrowwallet.sparrow.io.Config;
 import javafx.beans.NamedArg;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
-import javafx.scene.layout.StackPane;
 import org.girod.javafx.svgimage.SVGImage;
 import org.girod.javafx.svgimage.SVGLoader;
 import org.slf4j.Logger;
@@ -15,7 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.net.URL;
 import java.util.Locale;
 
-public class DialogImage extends StackPane {
+public class DialogImage extends DecorativePane {
     private static final Logger log = LoggerFactory.getLogger(DialogImage.class);
 
     public static final int WIDTH = 50;
@@ -24,6 +21,7 @@ public class DialogImage extends StackPane {
     public ObjectProperty<DialogImage.Type> typeProperty = new SimpleObjectProperty<>();
 
     public DialogImage() {
+        getStyleClass().add("dialog-image");
         setPrefSize(WIDTH, HEIGHT);
         this.typeProperty.addListener((observable, oldValue, type) -> {
             refresh(type);
@@ -42,7 +40,7 @@ public class DialogImage extends StackPane {
 
     protected void refresh(Type type) {
         SVGImage svgImage;
-        if(Config.get().getTheme() == Theme.DARK) {
+        if(AppServices.isDarkTheme()) {
             svgImage = loadSVGImage("/image/dialog/" + type.name().toLowerCase(Locale.ROOT) + "-invert.svg");
         } else {
             svgImage = loadSVGImage("/image/dialog/" + type.name().toLowerCase(Locale.ROOT) + ".svg");

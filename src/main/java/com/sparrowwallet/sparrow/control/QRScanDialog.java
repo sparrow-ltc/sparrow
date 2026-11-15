@@ -47,10 +47,11 @@ import javafx.scene.layout.*;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
 import org.controlsfx.tools.Borders;
-import org.openpnp.capture.CaptureDevice;
+import io.github.doblon8.openpnp.capture.CaptureDevice;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharsetDecoder;
@@ -74,7 +75,7 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
 
     private QRScanDialog.Result result;
 
-    private static final Pattern PART_PATTERN = Pattern.compile("p(\\d+)of(\\d+) (.+)");
+    private static final Pattern PART_PATTERN = Pattern.compile("p(\\d{1,4})of(\\d{1,4}) (.+)");
 
     private static final int SCAN_PERIOD_MILLIS = 100;
     private final ObjectProperty<CaptureDevice> webcamDeviceProperty = new SimpleObjectProperty<>();
@@ -102,6 +103,7 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
         final DialogPane dialogPane = new QRScanDialogPane();
         setDialogPane(dialogPane);
         AppServices.setStageIcon(dialogPane.getScene().getWindow());
+        setTitle("Scan QR Code");
 
         WebcamView webcamView = new WebcamView(webcamService, Config.get().isMirrorCapture());
 
@@ -110,6 +112,7 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
         progressBar.setPadding(new Insets(0, 10, 0, 10));
         progressBar.setPrefWidth(Integer.MAX_VALUE);
         progressBar.progressProperty().bind(percentComplete);
+        progressBar.setAccessibleText("Scan progress");
 
         VBox vBox = new VBox(20);
         StackPane stackPane = new StackPane();
@@ -132,7 +135,6 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
                         List<CaptureDevice> newDevices = new ArrayList<>(webcamService.getAvailableDevices());
                         newDevices.removeAll(foundDevices);
                         foundDevices.addAll(newDevices);
-                        foundDevices.removeIf(device -> !webcamService.getDevices().contains(device));
 
                         if(webcamService.getDevice() != null) {
                             for(CaptureDevice device : foundDevices) {
@@ -141,6 +143,8 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
                                 }
                             }
                         }
+
+                        foundDevices.removeIf(device -> !webcamService.getAvailableDevices().contains(device));
 
                         updateList(availableResolutions, webcamService.getResolutions());
                         webcamResolutionProperty.set(webcamService.getResolution());
@@ -188,10 +192,12 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
             }
         });
         webcamDeviceProperty.addListener((_, _, newValue) -> {
-            Config.get().setWebcamDevice(newValue.getName());
-            Config.get().setWebcamDeviceId(newValue.getUniqueId());
-            if(!Objects.equals(webcamService.getDevice(), newValue)) {
-                webcamService.cancel();
+            if(newValue != null) {
+                Config.get().setWebcamDevice(newValue.getName());
+                Config.get().setWebcamDeviceId(newValue.getUniqueId());
+                if(!Objects.equals(webcamService.getDevice(), newValue)) {
+                    webcamService.cancel();
+                }
             }
         });
 
@@ -210,6 +216,15 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
         final ButtonType deviceButtonType = new javafx.scene.control.ButtonType("Default Camera", ButtonBar.ButtonData.LEFT);
         final ButtonType resolutionButtonType = new javafx.scene.control.ButtonType("Resolution", ButtonBar.ButtonData.HELP_2);
         dialogPane.getButtonTypes().addAll(deviceButtonType, resolutionButtonType, cancelButtonType);
+
+        //The camera and resolution pop-ups have no visible label, so hidden labels name them for screen readers
+        for(Map.Entry<String, ButtonType> popup : Map.of("Camera", deviceButtonType, "Resolution", resolutionButtonType).entrySet()) {
+            Label label = new Label(popup.getKey());
+            label.setLabelFor(dialogPane.lookupButton(popup.getValue()));
+            label.setVisible(false);
+            label.setManaged(false);
+            vBox.getChildren().add(label);
+        }
         dialogPane.setPrefWidth(646);
         dialogPane.setPrefHeight(webcamResolutionProperty.get().isWidescreenAspect() ? 490 : 590);
         dialogPane.setMinHeight(dialogPane.getPrefHeight());
@@ -274,15 +289,19 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
                 int n = Integer.parseInt(partMatcher.group(2));
                 String payload = partMatcher.group(3);
 
-                if(parts == null) {
+                if(n < 1 || m < 1 || m > n) {
+                    log.warn("Ignoring invalid QR part " + m + " of " + n);
+                    return;
+                }
+
+                //A different number of parts indicates a different sequence, so start over
+                if(parts == null || parts.size() != n) {
                     parts = new ArrayList<>(n);
                     IntStream.range(0, n).forEach(i -> parts.add(null));
                 }
                 parts.set(m - 1, payload);
 
-                if(n > 0) {
-                    Platform.runLater(() -> percentComplete.setValue((double)parts.stream().filter(Objects::nonNull).count() / n));
-                }
+                Platform.runLater(() -> percentComplete.setValue((double)parts.stream().filter(Objects::nonNull).count() / n));
 
                 if(parts.stream().filter(Objects::nonNull).count() == n) {
                     String complete = String.join("", parts);
@@ -456,7 +475,7 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
                         //ignore, bytes not parsable as utf-8
                     }
 
-                    result = new Result(new URException("Parsed UR of type " + urRegistryType + " was not a PSBT, transaction or UTF-8 text"));
+                    return new Result(new URException("Parsed UR of type " + urRegistryType + " was not a PSBT, transaction or UTF-8 text"));
                 } else if(urRegistryType.equals(RegistryType.CRYPTO_PSBT)) {
                     CryptoPSBT cryptoPSBT = (CryptoPSBT)ur.decodeFromRegistry();
                     try {
@@ -541,8 +560,6 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
                 log.error("Error parsing UR CBOR", e);
                 return new Result(new URException("Error parsing UR CBOR", e));
             }
-
-            return null;
         }
 
         private Address getAddress(CryptoAddress cryptoAddress) {
@@ -579,6 +596,14 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
                 }
                 DeterministicKey pubKey = new DeterministicKey(List.of(lastChild), cryptoHDKey.getChainCode(), cryptoHDKey.getKey(), depth, parentFingerprint);
                 return new ExtendedKey(pubKey, parentFingerprint, lastChild);
+            }
+        }
+
+        private ECKey getKey(CryptoHDKey cryptoHDKey) {
+            if(cryptoHDKey.isPrivateKey()) {
+                return ECKey.fromPrivate(new BigInteger(1, cryptoHDKey.getKey()));
+            } else {
+                return ECKey.fromPublicOnly(cryptoHDKey.getKey());
             }
         }
 
@@ -679,11 +704,16 @@ public class QRScanDialog extends Dialog<QRScanDialog.Result> {
             for(int i = 0; i < keys.size(); i++) {
                 RegistryItem key = keys.get(i);
                 if(key instanceof URHDKey urhdKey) {
-                    ExtendedKey extendedKey = getExtendedKey(urhdKey);
                     KeyDerivation keyDerivation = getKeyDerivation(urhdKey.getOrigin());
-                    source = source.replaceAll("@" + i, OutputDescriptor.writeKey(extendedKey, keyDerivation, null, true, true));
-                    if(urhdKey.getName() != null) {
-                        mapExtendedPublicKeyLabels.put(extendedKey, urhdKey.getName());
+                    if(urhdKey.getChainCode() == null) {
+                        ECKey ecKey = getKey(urhdKey);
+                        source = source.replaceAll("@" + i, OutputDescriptor.writeKey(ecKey, keyDerivation, true, true));
+                    } else {
+                        ExtendedKey extendedKey = getExtendedKey(urhdKey);
+                        source = source.replaceAll("@" + i, OutputDescriptor.writeKey(extendedKey, keyDerivation, null, true, true));
+                        if(urhdKey.getName() != null) {
+                            mapExtendedPublicKeyLabels.put(extendedKey, urhdKey.getName());
+                        }
                     }
                 } else {
                     throw new IllegalArgumentException("Only extended HD keys are supported in output descriptors");
