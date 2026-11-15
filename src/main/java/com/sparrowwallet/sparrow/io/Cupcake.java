@@ -5,6 +5,7 @@ import com.sparrowwallet.drongo.ExtendedKey;
 import com.sparrowwallet.drongo.KeyDerivation;
 import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.crypto.ECKey;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.uri.BitcoinURI;
 import com.sparrowwallet.drongo.uri.BitcoinURIParseException;
@@ -19,7 +20,7 @@ import java.nio.charset.StandardCharsets;
 
 public class Cupcake extends SpecterDIY {
     @Override
-    public Keystore getKeystore(ScriptType scriptType, InputStream inputStream, String password) throws ImportException {
+    public Keystore getKeystore(PolicyType policyType, ScriptType scriptType, InputStream inputStream, String password) throws ImportException {
         try {
             var uri = new BitcoinURI(CharStreams.toString(new InputStreamReader(inputStream, StandardCharsets.UTF_8)));
             var label = (String)uri.getParameterByName("label");

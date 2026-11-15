@@ -49,7 +49,7 @@ public class MwebServer {
 
     private void start() {
         var chain = Network.get().getName();
-        var dataDir = Storage.getSparrowDir().toPath().resolve("mweb");
+        var dataDir = Storage.getCacheDir().toPath().resolve("mweb");
         try {
             Files.createDirectories(dataDir);
         } catch (IOException _) {

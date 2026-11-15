@@ -45,12 +45,13 @@ dependencies {
     //Any changes to the dependencies must be reflected in the module definitions below!
     implementation(project(':drongo'))
     implementation(project(':lark'))
+    implementation('net.java.dev.jna:jna:5.18.1')
     implementation('com.google.guava:guava:33.5.0-jre')
     implementation('com.google.code.gson:gson:2.13.2')
     implementation('com.google.protobuf:protobuf-java:4.34.0')
-    implementation('io.grpc:grpc-stub:1.79.0')
-    implementation('io.grpc:grpc-protobuf:1.79.0')
-    implementation('io.grpc:grpc-netty:1.79.0')
+    implementation('io.grpc:grpc-stub:1.82.4')
+    implementation('io.grpc:grpc-protobuf:1.82.4')
+    implementation('io.grpc:grpc-netty:1.82.4')
     implementation('com.h2database:h2:2.1.214')
     implementation('com.zaxxer:HikariCP:7.0.2') {
         exclude group: 'org.slf4j'
