@@ -102,18 +102,22 @@ public class MwebServer {
     }
 
     public Transaction create(Wallet wallet, Map<BlockTransactionHashIndex, WalletNode> utxos,
-                              List<WalletTransaction.Output> outputs, double feeRate, boolean dryRun) {
+                              List<TransactionOutput> outputs, double feeRate, boolean dryRun) {
         var tx = new Transaction();
         for (var entry : utxos.entrySet()) {
             var hash = entry.getKey().getHash();
             var index = entry.getKey().getIndex();
-            if (wallet.getScriptType() == ScriptType.MWEB) {
+            if (entry.getValue().getAddress().getScriptType() == ScriptType.MWEB) {
                 hash = MwebUtils.getOutputId(wallet, entry.getKey());
                 index = MwebUtils.getAddressIndex(entry.getValue());
+                tx.addInput(hash, index, new Script(List.of()));
+            } else {
+                var prevTx = wallet.getWalletTransaction(hash).getTransaction();
+                var prevTxOut = prevTx.getOutputs().get((int)index);
+                Wallet.addDummySpendingInput(tx, entry.getValue(), prevTxOut);
             }
-            tx.addInput(hash, index, new Script(List.of()));
         }
-        outputs.forEach(out -> tx.addOutput(MwebUtils.adjustScript(out.getTransactionOutput())));
+        outputs.forEach(out -> tx.addOutput(MwebUtils.adjustScript(out)));
         var keystore = wallet.getKeystores().getFirst();
         var scanKey = new byte[32];
         if (keystore.getMwebScanPrivateKey() != null) {
