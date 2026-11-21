@@ -177,7 +177,7 @@ public class PaymentController extends WalletFormController implements Initializ
                 dnsPaymentProperty.set(null);
             }
 
-            if(silentPaymentAddressProperty.get() != null && !newValue.equals(silentPaymentAddressProperty.get().getAddress())) {
+            if(silentPaymentAddressProperty.get() != null && !newValue.equals(silentPaymentAddressProperty.get().getAddress()) && dnsPaymentProperty.get() == null) {
                 silentPaymentAddressProperty.set(null);
             }
 
@@ -185,7 +185,8 @@ public class PaymentController extends WalletFormController implements Initializ
                 payjoinURIProperty.set(null);
             }
 
-            if(payNymProperty.get() == null) {
+            //A name already resolved is shown in place of its recipient, which is not parsed again from it
+            if(payNymProperty.get() == null && dnsPaymentProperty.get() == null) {
                 try {
                     BitcoinURI bitcoinURI = new BitcoinURI(newValue);
                     Platform.runLater(() -> updateFromURI(bitcoinURI));
@@ -374,12 +375,12 @@ public class PaymentController extends WalletFormController implements Initializ
         });
 
         amountUnit.getSelectionModel().select(BitcoinUnit.BTC.equals(sendController.getBitcoinUnit(Config.get().getBitcoinUnit())) ? 0 : 1);
-        amount.setTextFormatter(new CoinTextFormatter(Config.get().getUnitFormat(), amountUnit.getValue()));
+        amount.setTextFormatter(createAmountFormatter(Config.get().getUnitFormat(), amountUnit.getValue()));
         amount.textProperty().addListener(amountListener);
 
         amountUnit.valueProperty().addListener((observable, oldValue, newValue) -> {
             Long value = getRecipientValueSats(oldValue);
-            amount.setTextFormatter(new CoinTextFormatter(Config.get().getUnitFormat(), newValue));
+            amount.setTextFormatter(createAmountFormatter(Config.get().getUnitFormat(), newValue));
             if(value != null) {
                 UnitFormat unitFormat = Config.get().getUnitFormat() == null ? UnitFormat.DOT : Config.get().getUnitFormat();
                 DecimalFormat df = new DecimalFormat("#.#", unitFormat.getDecimalFormatSymbols());
@@ -436,6 +437,9 @@ public class PaymentController extends WalletFormController implements Initializ
             setSilentPaymentAddress(dnsPayment.bitcoinURI().getSilentPaymentAddress());
         } else if(dnsPayment.hasAddress()) {
             DnsPaymentCache.putDnsPayment(dnsPayment.bitcoinURI().getAddress(), dnsPayment);
+        } else if(dnsPayment.hasOtherNetworkSilentPaymentAddress()) {
+            AppServices.showWarningDialog("Different Network", "The DNS payment instruction for " + dnsPayment.hrn() + " resolved correctly but contains a silent payment address for a different network.");
+            return;
         } else {
             AppServices.showWarningDialog("No Address Provided", "The DNS payment instruction for " + dnsPayment.hrn() + " resolved correctly but did not contain a bitcoin address.");
             return;
@@ -620,6 +624,14 @@ public class PaymentController extends WalletFormController implements Initializ
         return (this != paymentController && payNymProperty.get() != null && payNymProperty.get().paymentCode().equals(paymentController.payNymProperty.get().paymentCode()));
     }
 
+    private CoinTextFormatter createAmountFormatter(UnitFormat unitFormat, BitcoinUnit bitcoinUnit) {
+        return new CoinTextFormatter(unitFormat, bitcoinUnit, btcAmount -> {
+            amountUnit.getSelectionModel().select(BitcoinUnit.BTC);
+            amount.setText(btcAmount);
+            amount.end();
+        });
+    }
+
     private Long getRecipientValueSats() {
         return getRecipientValueSats(amountUnit.getSelectionModel().getSelectedItem());
     }
@@ -737,8 +749,11 @@ public class PaymentController extends WalletFormController implements Initializ
         if(getRecipientValueSats() == null || payment.getAmount() != getRecipientValueSats()) {
             if(payment.getAddress() != null) {
                 DnsPayment dnsPayment = DnsPaymentCache.getDnsPayment(payment);
-                if(dnsPayment != null) {
+                if(dnsPayment != null && (!(payment instanceof SilentPayment) || sendController.getWalletForm().getWallet().canSendSilentPayments())) {
+                    dnsPaymentProperty.set(dnsPayment);
+                    silentPaymentAddressProperty.set(payment instanceof SilentPayment silentPayment ? silentPayment.getSilentPaymentAddress() : null);
                     address.setText(dnsPayment.hrn());
+                    address.leftProperty().set(getBitcoinCharacter());
                 } else if(payment instanceof SilentPayment silentPayment) {
                     address.setText(silentPayment.getSilentPaymentAddress().getAddress());
                 } else {
@@ -764,6 +779,7 @@ public class PaymentController extends WalletFormController implements Initializ
         amount.textProperty().removeListener(amountListener);
         amount.setText("");
         amount.textProperty().addListener(amountListener);
+        amountUnit.getSelectionModel().select(sendController.getBitcoinUnit(Config.get().getBitcoinUnit()));
 
         fiatAmount.setText("");
         setSendMax(false);
@@ -811,6 +827,10 @@ public class PaymentController extends WalletFormController implements Initializ
         Optional<QRScanDialog.Result> optionalResult = qrScanDialog.showAndWait();
         if(optionalResult.isPresent()) {
             QRScanDialog.Result result = optionalResult.get();
+            if(payNymProperty.get() != null && (result.uri != null || result.payload != null)) {
+                address.setText("");
+            }
+
             if(result.uri != null) {
                 updateFromURI(result.uri);
             } else if(result.payload != null) {
@@ -948,7 +968,7 @@ public class PaymentController extends WalletFormController implements Initializ
     public void unitFormatChanged(UnitFormatChangedEvent event) {
         if(amount.getTextFormatter() instanceof CoinTextFormatter coinTextFormatter && coinTextFormatter.getUnitFormat() != event.getUnitFormat()) {
             Long value = getRecipientValueSats(coinTextFormatter.getUnitFormat(), amountUnit.getSelectionModel().getSelectedItem());
-            amount.setTextFormatter(new CoinTextFormatter(event.getUnitFormat(), amountUnit.getValue()));
+            amount.setTextFormatter(createAmountFormatter(event.getUnitFormat(), amountUnit.getValue()));
 
             if(value != null) {
                 setRecipientValueSats(value);

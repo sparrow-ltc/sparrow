@@ -158,6 +158,11 @@ public class TransactionController implements Initializable {
 
     private void initializeTxTree() {
         txTreeWidthProperty.bind(txSplitPane.widthProperty().multiply(txSplitPane.getDividers().getFirst().positionProperty()));
+        txtree.minWidthProperty().addListener((_, oldWidth, newWidth) -> {
+            if(newWidth.doubleValue() < oldWidth.doubleValue() && txSplitPane.getWidth() > 0 && txtree.getWidth() <= oldWidth.doubleValue() + 1) {
+                Platform.runLater(() -> txSplitPane.setDividerPosition(0, newWidth.doubleValue() / txSplitPane.getWidth()));
+            }
+        });
 
         txtree.setRoot(buildTxTree());
 
@@ -766,6 +771,12 @@ public class TransactionController implements Initializable {
 
     @Subscribe
     public void newConnection(ConnectionEvent event) {
+        //The server now connected need not be the one that reported the status, so it is asked again
+        if(txdata.isServerReported(AppServices.get().getOpenWallets().keySet())) {
+            txdata.setBlockTransaction(null);
+            transactionsFetched = false;
+        }
+
         if(!transactionsFetched) {
             fetchTransactions();
         }

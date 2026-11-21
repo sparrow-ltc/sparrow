@@ -165,7 +165,7 @@ public class KeystoreController extends WalletFormController implements Initiali
 
         label.setText(keystore.getLabel());
 
-        derivation.setPromptText(getWalletForm().getWallet().getScriptType().getDefaultDerivationPath());
+        derivation.setPromptText(getWalletForm().getWallet().getScriptType().getDefaultDerivationPath(getWalletForm().getWallet().getPolicyType()));
 
         xpubField.managedProperty().bind(xpubField.visibleProperty());
         spScanField.managedProperty().bind(spScanField.visibleProperty());
@@ -312,8 +312,7 @@ public class KeystoreController extends WalletFormController implements Initiali
             launchImportDialog(keystoreSource);
         } else {
             fingerprint.setText(KeyDerivation.DEFAULT_WATCH_ONLY_FINGERPRINT);
-            derivation.setText(getWalletForm().getWallet().getPolicyType() == PolicyType.SINGLE_SP ? KeyDerivation.writePath(KeyDerivation.getBip352Derivation(0))
-                    : getWalletForm().getWallet().getScriptType().getDefaultDerivationPath());
+            derivation.setText(getWalletForm().getWallet().getScriptType().getDefaultDerivationPath(getWalletForm().getWallet().getPolicyType()));
             selectSourcePane.setVisible(false);
             label.requestFocus();
         }
@@ -695,7 +694,8 @@ public class KeystoreController extends WalletFormController implements Initiali
                         }
                     }
 
-                    Keystore keystore = Keystore.fromSeed(result.seed, getWalletForm().getWallet().getPolicyType(), getWalletForm().getWallet().getScriptType().getDefaultDerivation());
+                    Keystore keystore = Keystore.fromSeed(result.seed, getWalletForm().getWallet().getPolicyType(),
+                            getWalletForm().getWallet().getScriptType().getDefaultDerivation(getWalletForm().getWallet().getPolicyType()));
                     fingerprint.setText(keystore.getKeyDerivation().getMasterFingerprint());
                     derivation.setText(keystore.getKeyDerivation().getDerivationPath());
                     xpub.setText(keystore.getExtendedPublicKey().toString());
@@ -708,6 +708,7 @@ public class KeystoreController extends WalletFormController implements Initiali
             } else if(result.payload != null) {
                 try {
                     OutputDescriptor outputDescriptor = OutputDescriptor.getOutputDescriptor("sh(" + result.payload + ")");
+                    outputDescriptor.verifyStandardChildDerivations();
                     Wallet wallet = outputDescriptor.toWallet();
                     Keystore keystore = wallet.getKeystores().get(0);
                     fingerprint.setText(keystore.getKeyDerivation().getMasterFingerprint());
@@ -768,9 +769,9 @@ public class KeystoreController extends WalletFormController implements Initiali
         if(walletForm.getWallet().equals(event.getWallet())) {
             if(event.getType().equals(SettingsChangedEvent.Type.SCRIPT_TYPE)) {
                 if(keystore.getSource() == KeystoreSource.SW_WATCH && derivation.getPromptText().equals(derivation.getText())) {
-                    derivation.setText(event.getWallet().getScriptType().getDefaultDerivationPath());
+                    derivation.setText(event.getWallet().getScriptType().getDefaultDerivationPath(event.getWallet().getPolicyType()));
                 }
-                derivation.setPromptText(event.getWallet().getScriptType().getDefaultDerivationPath());
+                derivation.setPromptText(event.getWallet().getScriptType().getDefaultDerivationPath(event.getWallet().getPolicyType()));
                 if(derivation.getText() != null && !derivation.getText().isEmpty()) {
                     String derivationPath = derivation.getText();
                     derivation.setText(derivationPath + " ");

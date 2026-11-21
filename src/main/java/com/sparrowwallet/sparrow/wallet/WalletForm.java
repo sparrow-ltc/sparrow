@@ -148,10 +148,6 @@ public class WalletForm {
         }
     }
 
-    public void deleteBackups() {
-        storage.deleteBackups();
-    }
-
     public void refreshHistory(Integer blockHeight) {
         refreshHistory(blockHeight, null, null);
     }
@@ -250,6 +246,9 @@ public class WalletForm {
             if(scanService.getValue()) {
                 EventManager.get().post(new WalletHistoryFinishedEvent(wallet));
                 updateWallets(blockHeight, previousWallet);
+            } else {
+                //The payments a scan finds are added to the wallet before their history is fetched, and must be saved even where that fetch is not made
+                updateWallets(null, previousWallet);
             }
             firePendingRefreshIfRequested();
         });
@@ -279,7 +278,7 @@ public class WalletForm {
         }
     }
 
-    private void handleHistoryFailed(Wallet previousWallet, Throwable exception) {
+    void handleHistoryFailed(Wallet previousWallet, Throwable exception) {
         if(exception instanceof AllHistoryChangedException) {
             if(getWallet().isMasterWallet() && getWallet().getKeystores().stream().anyMatch(Keystore::needsPassphrase)) {
                 Optional<ButtonType> optType = AppServices.showWarningDialog("Reopen " + getWallet().getMasterName() + "?",
@@ -313,6 +312,10 @@ public class WalletForm {
             }
 
             EventManager.get().post(new WalletHistoryFailedEvent(wallet, exception));
+
+            //A refresh can change the wallet before failing, as a silent payments scan does in adding the payments it finds before fetching their history.
+            //The next refresh copies a wallet already holding those changes and would not report them, so they are saved here, without advancing the block height
+            updateWallets(null, previousWallet);
         }
     }
 
@@ -722,7 +725,7 @@ public class WalletForm {
                     if(entry instanceof NodeEntry nodeEntry) {
                         for(BlockTransactionHashIndex receivedRef : nodeEntry.getNode().getTransactionOutputs()) {
                             BlockTransaction blockTransaction = event.getWallet().getTransactions().get(receivedRef.getHash());
-                            if(blockTransaction.getLabel() == null || blockTransaction.getLabel().isEmpty()) {
+                            if(blockTransaction != null && (blockTransaction.getLabel() == null || blockTransaction.getLabel().isEmpty())) {
                                 blockTransaction.setLabel(entry.getLabel());
                                 labelChangedEntries.put(new TransactionEntry(event.getWallet(), blockTransaction, Collections.emptyMap(), Collections.emptyMap()), entry);
                             }
@@ -731,7 +734,7 @@ public class WalletForm {
                     if(entry instanceof HashIndexEntry hashIndexEntry) {
                         BlockTransaction blockTransaction = hashIndexEntry.getBlockTransaction();
                         //Avoid recursive changes from hashIndexEntries
-                        if((blockTransaction.getLabel() == null || blockTransaction.getLabel().isEmpty()) && event.getSource(entry) == null) {
+                        if(blockTransaction != null && (blockTransaction.getLabel() == null || blockTransaction.getLabel().isEmpty()) && event.getSource(entry) == null) {
                             blockTransaction.setLabel(entry.getLabel());
                             labelChangedEntries.put(new TransactionEntry(event.getWallet(), blockTransaction, Collections.emptyMap(), Collections.emptyMap()), entry);
                         }
@@ -787,7 +790,7 @@ public class WalletForm {
 
     @Subscribe
     public void walletUtxoStatusChanged(WalletUtxoStatusChangedEvent event) {
-        if(event.getWallet() == wallet) {
+        if(event.fromThisOrNested(wallet)) {
             Platform.runLater(() -> EventManager.get().post(new WalletDataChangedEvent(wallet)));
         }
     }

@@ -34,7 +34,7 @@ public enum PublicElectrumServer {
         this.supportedPolicyTypes = supportedPolicyTypes;
     }
 
-    public static final List<Network> SUPPORTED_NETWORKS = List.of(Network.MAINNET, Network.TESTNET, Network.SIGNET, Network.TESTNET4);
+    public static final List<Network> SUPPORTED_NETWORKS = List.of(Network.MAINNET, Network.TESTNET, Network.SIGNET, Network.TESTNET4, Network.TESTNET5);
 
     private final Server server;
     private final Network network;

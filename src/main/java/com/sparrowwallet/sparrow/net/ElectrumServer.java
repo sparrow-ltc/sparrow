@@ -134,7 +134,9 @@ public class ElectrumServer {
 
     private static final long TIP_WARNING_INTERVAL_MILLIS = 60 * 1000;
 
-    private static volatile long lastTipReceivedAt;
+    static volatile long lastTipReceivedAt;
+
+    private static volatile Sha256Hash lastTipHash;
 
     private static volatile boolean staleTipWarned;
 
@@ -200,6 +202,15 @@ public class ElectrumServer {
     private static final Set<Sha256Hash> unsignedWarnedTxids = ConcurrentHashMap.newKeySet();
 
     private static synchronized CloseableTransport getTransport() throws ServerException {
+        if(transport == null) {
+            throw new ServerException("Not connected to a server");
+        }
+
+        return transport;
+    }
+
+    //Only a connection creates the transport, from the settings of that moment, so that one created by a call made after a disconnection cannot be reused
+    private static synchronized CloseableTransport getConnectionTransport() throws ServerException {
         if(transport == null) {
             try {
                 Server electrumServer = null;
@@ -284,12 +295,17 @@ public class ElectrumServer {
     }
 
     public void connect() throws ServerException {
-        CloseableTransport closeableTransport = getTransport();
+        CloseableTransport closeableTransport = getConnectionTransport();
         closeableTransport.connect();
     }
 
     public void ping() throws ServerException {
-        electrumServerRpc.ping(getTransport());
+        //A request awaiting its response already shows whether the server is still there, and a ping would wait behind it,
+        //costing a full sync cycle on a server that answers requests in turn, as electrs does
+        CloseableTransport closeableTransport = getTransport();
+        if(!(closeableTransport instanceof TcpTransport tcpTransport && tcpTransport.isRequestPending())) {
+            electrumServerRpc.ping(closeableTransport);
+        }
     }
 
     public List<String> getServerVersion() throws ServerException {
@@ -586,7 +602,7 @@ public class ElectrumServer {
                             if(retrievedScriptHashes.get(scriptHash) == null && !node.getTransactionOutputs().isEmpty()
                                     && (invalidatedBeforeFetch.contains(scriptHash) || !invalidatedScriptHashes.contains(scriptHash))) {
                                 log.debug("Clearing transaction history for " + node);
-                                node.getTransactionOutputs().clear();
+                                node.updateTransactionOutputs(node.getWallet(), Collections.emptySet());
                             }
                         }
                     }
@@ -677,6 +693,7 @@ public class ElectrumServer {
         Set<WalletNode> mempoolNodes = wallet.getWalletTxos().entrySet().stream()
                 .filter(entry -> entry.getKey().getHeight() <= 0 || (entry.getKey().getSpentBy() != null && entry.getKey().getSpentBy().getHeight() <= 0))
                 .map(Map.Entry::getValue)
+                .filter(node -> node.getWallet().equals(wallet))
                 .collect(Collectors.toSet());
         historyNodes.addAll(mempoolNodes);
 
@@ -701,7 +718,7 @@ public class ElectrumServer {
             Map<String, WalletNode> walletScriptHashes = getAllScriptHashes(wallet);
             for(BlockTransactionHash reference : newReferences) {
                 BlockTransaction blockTransaction = wallet.getTransactions().get(reference.getHash());
-                if(blockTransaction == null) {
+                if(blockTransaction == null || blockTransaction.equals(UNFETCHABLE_BLOCK_TRANSACTION)) {
                     continue;
                 }
 
@@ -714,7 +731,7 @@ public class ElectrumServer {
 
                 for(TransactionInput txInput : blockTransaction.getTransaction().getInputs()) {
                     BlockTransaction inputBlockTransaction = wallet.getTransactions().get(txInput.getOutpoint().getHash());
-                    if(inputBlockTransaction != null) {
+                    if(inputBlockTransaction != null && !inputBlockTransaction.equals(UNFETCHABLE_BLOCK_TRANSACTION)) {
                         TransactionOutput txOutput = inputBlockTransaction.getTransaction().getOutputs().get((int)txInput.getOutpoint().getIndex());
                         WalletNode node = walletScriptHashes.get(getScriptHash(txOutput));
                         if(node != null && !historyNodes.contains(node)) {
@@ -758,7 +775,11 @@ public class ElectrumServer {
         //The gap limit size takes the highest used index in the retrieved history and adds the gap limit (plus one to be comparable to the number of children since index is zero based)
         int gapLimitSize = getGapLimitSize(wallet, nodeTransactionMap, purposeNode);
         while(historySize < gapLimitSize) {
-            purposeNode.fillToIndex(wallet, gapLimitSize - 1);
+            //Silent payments nodes are added as payments are found rather than derived, so their indexes need not be contiguous and none can be added here
+            if(purposeNode.fillToIndex(wallet, gapLimitSize - 1).isEmpty()) {
+                break;
+            }
+
             subscribeWalletNodes(wallet, getAddressNodes(wallet, purposeNode), nodeTransactionMap, historySize);
             getReferences(wallet, nodeTransactionMap.keySet(), nodeTransactionMap, historySize);
             getReferencedTransactions(wallet, nodeTransactionMap);
@@ -779,9 +800,34 @@ public class ElectrumServer {
     }
 
     private int getGapLimitSize(Wallet wallet, Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap, WalletNode purposeNode) {
-        int highestIndex = nodeTransactionMap.keySet().stream().filter(node -> node.getDerivation().size() > 1 && purposeNode.getKeyPurpose() == node.getKeyPurpose())
-                .map(WalletNode::getIndex).max(Comparator.comparing(Integer::valueOf)).orElse(-1);
+        //Taken from the highest index down, so that only the nodes above the highest used one are checked
+        int highestIndex = nodeTransactionMap.entrySet().stream()
+                .filter(entry -> entry.getKey().getDerivation().size() > 1 && purposeNode.getKeyPurpose() == entry.getKey().getKeyPurpose())
+                .sorted(Comparator.comparingInt((Map.Entry<WalletNode, Set<BlockTransactionHash>> entry) -> entry.getKey().getIndex()).reversed())
+                .filter(entry -> isPaidByFetchedTransaction(wallet, entry.getKey(), entry.getValue()))
+                .map(entry -> entry.getKey().getIndex()).findFirst().orElse(-1);
         return highestIndex + wallet.getGapLimit() + 1;
+    }
+
+    //An address is used once a transaction pays it, rather than once a status is reported for it
+    private static boolean isPaidByFetchedTransaction(Wallet wallet, WalletNode node, Set<BlockTransactionHash> references) {
+        if(references == null || references.isEmpty()) {
+            return false;
+        }
+
+        byte[] outputScript = node.getOutputScript().getProgram();
+        for(BlockTransactionHash reference : references) {
+            BlockTransaction blockTransaction = wallet.getTransactions().get(reference.getHash());
+            if(blockTransaction != null && blockTransaction.getTransaction() != null) {
+                for(TransactionOutput txOutput : blockTransaction.getTransaction().getOutputs()) {
+                    if(Arrays.equals(txOutput.getScript().getProgram(), outputScript)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     public void getReferences(Wallet wallet, Collection<WalletNode> nodes, Map<WalletNode, Set<BlockTransactionHash>> nodeTransactionMap, int startIndex) throws ServerException {
@@ -1049,7 +1095,7 @@ public class ElectrumServer {
                 //its stored block was orphaned, so it must be rebuilt to carry the block it is now proven against. Its transaction comes from the wallet below,
                 //so nothing is fetched for it
                 if(reference.getHeight() == blockTransaction.getHeight() && (reference.getFee() == null || blockTransaction.getFee() != null)
-                        && !proven.containsKey(reference)) {
+                        && !proven.containsKey(reference) && wallet.getTransactions().containsKey(reference.getHash())) {
                     iter.remove();
                 } else {
                     entry.setValue(blockTransaction.getTransaction());
@@ -1357,6 +1403,33 @@ public class ElectrumServer {
     }
 
     /**
+     * The verified header at a height once the store has been brought onto the server's chain, or null where that could not be done. A server can report
+     * a transaction on a branch it has moved to before announcing that branch's tip, so a proof is only taken as false against the chain the server is on.
+     */
+    private BlockHeader getReconciledHeader(int height) throws ServerException {
+        synchronized(headerSyncLock) {
+            HeaderStore store = getHeaderStore();
+            try {
+                if(height < store.getStartHeight() || height > store.getTipHeight()) {
+                    return null;
+                }
+                reconcile(store, store.getTipHeight());
+            } catch(VerificationException e) {
+                log.debug("Could not reconcile the block header store with the server's chain", e);
+                return null;    //the server cannot substantiate a chain that replaces the stored one, so the proof stands as false
+            } catch(UnsupportedMethodException e) {
+                throw e;
+            } catch(ElectrumServerRpcException e) {
+                throw new ServerException(e.getMessage(), e.getCause());    //a failed call rather than a finding about the proof
+            } catch(IOException e) {
+                throw new ServerException("Could not write to the block header store", e);
+            }
+        }
+
+        return getVerifiedHeader(height);
+    }
+
+    /**
      * Verifies an inclusion proof for each given (transaction, height) pair, returning those proven with the header they were proven against. What is
      * missing was refused or shown false, told apart by what the server did rather than said: one unable to keep up fails whole batches and recovers
      * within the retries, while one that cannot substantiate a pair leaves it unanswered while its siblings succeed.
@@ -1403,7 +1476,7 @@ public class ElectrumServer {
                 BlockTransactionHash reference = outstanding.get(entry.getKey());
                 TransactionMerkleProof proof = entry.getValue();
                 //An error, or a proof for some other block, leaves the pair outstanding: the server has not substantiated the height it reported
-                if(reference != null && proof != TransactionMerkleProof.ERROR_PROOF && proof.block_height == reference.getHeight()) {
+                if(reference != null && proof != null && proof != TransactionMerkleProof.ERROR_PROOF && proof.block_height == reference.getHeight()) {
                     outstanding.remove(entry.getKey());
                     BlockHeader header = getVerifiedHeader(reference.getHeight());
                     if(header == null) {
@@ -1411,7 +1484,12 @@ public class ElectrumServer {
                     } else if(verifyProof(reference.getHash(), proof, header)) {
                         proven.put(reference, header);
                     } else {
-                        failedProofs.add(reference);        //the branch does not reconstruct against a verified header
+                        BlockHeader serverHeader = getReconciledHeader(reference.getHeight());
+                        if(serverHeader != null && !serverHeader.getHash().equals(header.getHash()) && verifyProof(reference.getHash(), proof, serverHeader)) {
+                            proven.put(reference, serverHeader);
+                        } else {
+                            failedProofs.add(reference);    //the branch does not reconstruct against a verified header
+                        }
                     }
                 }
             }
@@ -1946,11 +2024,13 @@ public class ElectrumServer {
             try {
                 //One object written once per event: the height and the header read separately can straddle a new block
                 ChainTip announced = AppServices.getAnnouncedTip();
-                if(announced != null && announced.height() >= store.getStartHeight() && announced.height() <= store.getTipHeight()
-                        && !announced.header().getHash().equals(store.getHash(announced.height()))) {
-                    //Never serve a stored header while the store tip disagrees with the announced tip: the tie form of a reorg
+                if(announced != null && announced.height() >= store.getStartHeight() && (announced.height() > store.getTipHeight()
+                        || !announced.header().getHash().equals(store.getHash(announced.height())))) {
+                    //Never serve a stored header until the store has reached the announced tip: a reorg replaces stored headers below the new tip
+                    //whether it ties the store tip or lengthens the chain, and only reaching the tip shows which
                     syncHeaders(announced);
-                } else if(height > store.getTipHeight()) {
+                }
+                if(height > store.getTipHeight()) {
                     syncHeadersTo(height);      //the sync service has not caught up, so fetch on this thread
                 }
 
@@ -2134,6 +2214,11 @@ public class ElectrumServer {
                     if(strRawTx.equals(strErrorTx)) {
                         transactionMap.put(hash, UNFETCHABLE_BLOCK_TRANSACTION);
                         checkReferences.removeIf(ref -> ref.getHash().equals(hash));
+                        continue;
+                    }
+
+                    if(strRawTx.length() > 2L * Transaction.MAX_BLOCK_SIZE_VBYTES * Transaction.WITNESS_SCALE_FACTOR) {
+                        log.error("Server returned transaction " + hash + " larger than the maximum block size");
                         continue;
                     }
 
@@ -2958,7 +3043,7 @@ public class ElectrumServer {
 
             tweakMap.putIfAbsent(txid, tweakKey);
             BlockTransaction existing = wallet.getWalletTransaction(txid);
-            if(existing != null) {
+            if(existing != null && !existing.equals(UNFETCHABLE_BLOCK_TRANSACTION)) {
                 transactionMap.put(txid, existing);
                 alreadyInWallet.add(txid);
             } else {
@@ -2977,6 +3062,9 @@ public class ElectrumServer {
                 Map<BlockTransactionHash, BlockHeader> proven = isVerifyingTransactions() ? verifySilentPaymentReferences(wallet, referencesToFetch) : Collections.emptyMap();
                 Map<Integer, BlockHeader> blockHeaderMap = getBlockHeaders(wallet, referencesToFetch.keySet());
                 Map<Sha256Hash, BlockTransaction> fetched = getTransactions(wallet, referencesToFetch, blockHeaderMap, proven);
+                //A transaction the server did not supply, as where it has left the mempool since it was announced, reaches neither the batch nor the wallet,
+                //and is asked for again on the next refresh
+                fetched.values().removeIf(blkTx -> blkTx.equals(UNFETCHABLE_BLOCK_TRANSACTION));
                 if(isVerifyingSignatures()) {
                     Function<Sha256Hash, Transaction> inputTransactions = txid -> {
                         BlockTransaction blockTransaction = fetched.containsKey(txid) ? fetched.get(txid) : wallet.getWalletTransaction(txid);
@@ -3206,18 +3294,24 @@ public class ElectrumServer {
     }
 
     private static void initializeTip(BlockHeaderTip tip) {
-        updateTipReceived(tip.height);
+        lastTipHash = null;
+        updateTipReceived(tip);
         //Public servers are never mid-sync, so seed the staleness clock from the tip timestamp to warn promptly on an already stale server
         if(Config.get().getServerType() == ServerType.PUBLIC_ELECTRUM_SERVER) {
             lastTipReceivedAt = Math.min(lastTipReceivedAt, tip.getBlockHeader().getTime() * 1000);
         }
     }
 
-    static void updateTipReceived(int height) {
-        lastTipReceivedAt = System.currentTimeMillis();
-        staleTipWarned = false;
+    static void updateTipReceived(BlockHeaderTip tip) {
+        //Only a block not seen before shows the server is still following the chain
+        Sha256Hash tipHash = tip.getBlockHeader().getHash();
+        if(!tipHash.equals(lastTipHash)) {
+            lastTipHash = tipHash;
+            lastTipReceivedAt = System.currentTimeMillis();
+            staleTipWarned = false;
+        }
         invalidTipWarned = false;
-        if(height >= Network.get().getHeaderCheckpoints().getMaxHeight()) {
+        if(tip.height >= Network.get().getHeaderCheckpoints().getMaxHeight()) {
             tipReachedCheckpoints = true;
         }
     }
@@ -3348,8 +3442,9 @@ public class ElectrumServer {
                     ElectrumServer electrumServer = new ElectrumServer();
 
                     if(Config.get().getServerType() == ServerType.BITCOIN_CORE) {
+                        boolean https = Config.get().getCoreServer() != null && Config.get().getCoreServer().getProtocol() == Protocol.HTTPS;
                         try {
-                            if(Config.get().isUseLegacyCoreWallet()) {
+                            if(Config.get().isUseLegacyCoreWallet() && !https) {
                                 throw new CormorantBitcoindException("Legacy wallet configured");
                             }
                             if(ElectrumServer.cormorant == null) {
@@ -3360,6 +3455,10 @@ public class ElectrumServer {
                             throw new ServerException(e.getMessage());
                         } catch(CormorantBitcoindException e) {
                             ElectrumServer.cormorant = null;
+                            if(https) {
+                                throw new ServerException("Upgrade Bitcoin Core to v24 or later to connect over https.");
+                            }
+
                             log.debug("Cannot start cormorant: " + e.getMessage() + ". Starting BWT...");
 
                             Bwt.initialize();
@@ -3709,7 +3808,7 @@ public class ElectrumServer {
                     } catch(ServerException | ElectrumServerRpcException e) {
                         //A failed call says nothing about the chain on its own, but a server answering every request for these headers with an error
                         //has not substantiated the tip any more than one serving the wrong headers
-                        if(failedTip != tip || !isConnected()) {
+                        if(!tip.isSameBlock(failedTip) || !isConnected()) {
                             failedTip = tip;
                             throw e;
                         }
@@ -3732,7 +3831,7 @@ public class ElectrumServer {
             ChainTip storeTip = getStoreTip();
             Platform.runLater(() -> {
                 //A run overtaken by a later announcement has nothing left to correct
-                if(tip != announcedTip) {
+                if(!tip.isSameBlock(announcedTip)) {
                     return;
                 }
 
@@ -3746,7 +3845,7 @@ public class ElectrumServer {
         /**
          * The body of a run, which happens on a background thread: the connection check is therefore the transport level one, since AppServices reads
          * a JavaFX Service and may only be called from the application thread. Without the check a retry firing after the connection closed would
-         * have getTransport() open a transport of its own, outside the connection lifecycle.
+         * fail for want of a transport, and be taken as the server failing to substantiate the tip it announced.
          */
         static void syncAnnouncedHeaders(ChainTip tip) throws ServerException {
             if(!isConnected()) {
@@ -4148,7 +4247,7 @@ public class ElectrumServer {
                 @Override
                 protected Map<String, TransactionMerkleProof> call() {
                     try {
-                        //getTransport() opens one where there is none, so a task running after the connection closed must not reach it
+                        //A task running after the connection closed has no transport to fetch with
                         if(isConnected()) {
                             return electrumServerRpc.getTransactionMerkleProofs(getTransport(), null, List.of(reference));
                         }
@@ -4183,7 +4282,7 @@ public class ElectrumServer {
             return new Task<>() {
                 @Override
                 protected BlockHeader call() throws ServerException {
-                    //getTransport() opens one where there is none, so a task running after the connection closed must not reach it
+                    //A task running after the connection closed has no transport to fetch with
                     if(!isConnected()) {
                         throw new ServerException("Not connected");
                     }

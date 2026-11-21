@@ -290,6 +290,7 @@ public class HeadersController extends TransactionFormController implements Init
         tx.setLocktime(locktime);
         if(headersForm.getPsbt() != null) {
             headersForm.getPsbt().setFallbackLocktime(locktime);
+            tx.setLocktime(headersForm.getPsbt().getTransaction().getLocktime());
         }
     }
 
@@ -319,14 +320,15 @@ public class HeadersController extends TransactionFormController implements Init
             if(new_toggle == null) {
                 old_toggle.setSelected(true);
             } else {
+                //The first selection shows the locktime the transaction already has, so neither it nor a PSBT's fallback locktime is written until the selection changes
                 String selection = locktimeToggleGroup.getSelectedToggle().getUserData().toString();
                 if(selection.equals("none")) {
                     locktimeFieldset.getChildren().remove(locktimeDateField);
                     locktimeFieldset.getChildren().remove(locktimeBlockField);
                     locktimeFieldset.getChildren().remove(locktimeNoneField);
                     locktimeFieldset.getChildren().add(locktimeNoneField);
-                    setTransactionLocktime(tx, 0);
                     if(old_toggle != null) {
+                        setTransactionLocktime(tx, 0);
                         EventManager.get().post(new TransactionChangedEvent(tx));
                     }
                 } else if(selection.equals("block")) {
@@ -338,8 +340,8 @@ public class HeadersController extends TransactionFormController implements Init
                     if(block != null) {
                         locktimeCurrentHeight.setVisible(headersForm.isEditable() && AppServices.getCurrentBlockHeight() != null && block < AppServices.getCurrentBlockHeight());
                         futureBlockWarning.setVisible(AppServices.getCurrentBlockHeight() != null && block > AppServices.getCurrentBlockHeight());
-                        setTransactionLocktime(tx, block);
                         if(old_toggle != null) {
+                            setTransactionLocktime(tx, block);
                             EventManager.get().post(new TransactionChangedEvent(tx));
                         }
                     }
@@ -352,8 +354,8 @@ public class HeadersController extends TransactionFormController implements Init
                     if(date != null) {
                         locktimeDate.setDateTimeValue(date);
                         futureDateWarning.setVisible(date.isAfter(LocalDateTime.now()));
-                        setTransactionLocktime(tx, date.atZone(ZoneId.systemDefault()).toEpochSecond());
                         if(old_toggle != null) {
+                            setTransactionLocktime(tx, date.atZone(ZoneId.systemDefault()).toEpochSecond());
                             EventManager.get().post(new TransactionChangedEvent(tx));
                         }
                     }
@@ -559,6 +561,14 @@ public class HeadersController extends TransactionFormController implements Init
             SigHash psbtSigHash = silentPaymentOutput ? requiredSigHash : psbt.getPsbtInputs().stream().map(PSBTInput::getSigHash).filter(Objects::nonNull).findFirst().orElse(requiredSigHash);
             sigHash.setItems(FXCollections.observableList(silentPaymentOutput ? List.of(requiredSigHash) : (taprootInput ? SigHash.TAPROOT_SIGNING_TYPES : SigHash.LEGACY_SIGNING_TYPES)));
             sigHash.setValue(psbtSigHash);
+            //Silent payments require every input to sign with SIGHASH_ALL, so the only value offered replaces any other the PSBT requests
+            if(silentPaymentOutput && headersForm.isEditable()) {
+                for(PSBTInput psbtInput : psbt.getPsbtInputs()) {
+                    if(psbtInput.getSigHash() != null && psbtInput.getSigHash() != SigHash.ALL && psbtInput.getSigHash() != SigHash.DEFAULT) {
+                        psbtInput.setSigHash(requiredSigHash == SigHash.DEFAULT && !psbtInput.isTaproot() ? SigHash.ALL : requiredSigHash);
+                    }
+                }
+            }
             sigHash.setConverter(new StringConverter<>() {
                 @Override
                 public String toString(SigHash sigHash) {
@@ -870,7 +880,9 @@ public class HeadersController extends TransactionFormController implements Init
     private void updateEditable(boolean editable) {
         version.setDisable(!editable);
 
-        boolean locktimeEnabled = editable && headersForm.getTransaction().isLocktimeSequenceEnabled();
+        boolean requiredLocktime = headersForm.getPsbt() != null
+                && headersForm.getPsbt().getPsbtInputs().stream().anyMatch(psbtInput -> psbtInput.getRequiredTimeLocktime() != null || psbtInput.getRequiredHeightLocktime() != null);
+        boolean locktimeEnabled = editable && headersForm.getTransaction().isLocktimeSequenceEnabled() && !requiredLocktime;
         locktimeNoneType.setDisable(!locktimeEnabled);
         locktimeBlockType.setDisable(!locktimeEnabled);
         locktimeDateType.setDisable(!locktimeEnabled);
@@ -1012,11 +1024,18 @@ public class HeadersController extends TransactionFormController implements Init
             }
         });
         transactionVerificationService.setOnFailed(workerStateEvent -> {
-            log.debug("Could not reach the server to verify transaction " + blockTransaction.getHashAsString(), workerStateEvent.getSource().getException());
+            log.debug("Could not verify transaction " + blockTransaction.getHashAsString(), workerStateEvent.getSource().getException());
             //Only the request still outstanding releases the pair: one a reconnect has already replaced is asking about the same pair, so the pair
             //cannot tell them apart, and letting the older failure release it would put a third request behind the one in flight
             if(verificationService == transactionVerificationService) {
-                verificationRequestedPair = null;
+                //A server still connected has not substantiated the height it reported, whatever the reason, and is not asked again until a reconnect
+                if(AppServices.isConnected() && ElectrumServer.isVerifyingTransactions() && headersForm.getTransaction().getTxId().equals(blockTransaction.getHash())) {
+                    verificationUnprovenPair = pair;
+                    BlockTransaction shown = headersForm.getBlockTransaction() == null ? blockTransaction : headersForm.getBlockTransaction();
+                    updateBlockchainForm(shown, AppServices.getCurrentBlockHeight());
+                } else {
+                    verificationRequestedPair = null;
+                }
             }
         });
         transactionVerificationService.start();
@@ -1335,7 +1354,8 @@ public class HeadersController extends TransactionFormController implements Init
         List<Device> signingDevices = AppServices.getDevices().stream().filter(device -> fingerprints.contains(device.getFingerprint())).collect(Collectors.toList());
         if(signingDevices.isEmpty() &&
                 (headersForm.getSigningWallet().getKeystores().stream().noneMatch(keystore -> keystore.getSource().equals(KeystoreSource.HW_USB) || keystore.getSource().equals(KeystoreSource.SW_WATCH) || keystore.getWalletModel().isCard()) ||
-                        (headersForm.getSigningWallet().getKeystores().stream().anyMatch(keystore -> keystore.getSource().equals(KeystoreSource.SW_SEED)) && headersForm.getSigningWallet().getKeystores().stream().anyMatch(keystore -> keystore.getSource().equals(KeystoreSource.SW_WATCH))))) {
+                        (headersForm.getSigningWallet().getKeystores().stream().anyMatch(keystore -> keystore.getSource().equals(KeystoreSource.SW_SEED)) && headersForm.getSigningWallet().getKeystores().stream().anyMatch(keystore -> keystore.getSource().equals(KeystoreSource.SW_WATCH))
+                                && headersForm.getSigningWallet().getKeystores().stream().noneMatch(keystore -> keystore.getWalletModel().isCard())))) {
             return;
         }
 
@@ -1356,7 +1376,7 @@ public class HeadersController extends TransactionFormController implements Init
             try {
                 PSBT combinedPsbt = headersForm.getPsbt().verifyCombinedSignatures(signedPsbt);
                 //A device can resolve a silent payment output script, which is only valid if the metadata provided with it proves the claimed address
-                verifySilentPaymentScripts(headersForm.getSigningWallet(), combinedPsbt);
+                AppServices.verifySilentPaymentScripts(headersForm.getSigningWallet(), combinedPsbt);
                 headersForm.getPsbt().combine(signedPsbt);
                 EventManager.get().post(new PSBTCombinedEvent(headersForm.getPsbt()));
             } catch(PSBTSignatureException e) {
@@ -1369,19 +1389,13 @@ public class HeadersController extends TransactionFormController implements Init
 
     private boolean verifyPSBT(Wallet signingWallet, PSBT psbt) {
         try {
-            verifySilentPaymentScripts(signingWallet, psbt);
+            AppServices.verifySilentPaymentScripts(signingWallet, psbt);
         } catch(InvalidSilentPaymentException e) {
             showErrorDialog("Unverified Silent Payment Outputs", e.getMessage());
             return false;
         }
 
         return true;
-    }
-
-    private void verifySilentPaymentScripts(Wallet signingWallet, PSBT psbt) throws InvalidSilentPaymentException {
-        if(signingWallet != null) {
-            signingWallet.verifySilentPaymentScripts(psbt);
-        }
     }
 
     private void updateSignedKeystores(Wallet signingWallet) {
@@ -2100,8 +2114,15 @@ public class HeadersController extends TransactionFormController implements Init
     @Subscribe
     public void connection(ConnectionEvent event) {
         broadcastProgressBar.setDisable(false);
-        if(headersForm.getBlockTransaction() != null) {
+        boolean serverReported = headersForm.getTransactionData().isServerReported(AppServices.get().getOpenWallets().keySet());
+        if(headersForm.getBlockTransaction() != null && !serverReported) {
             updateBlockchainForm(headersForm.getBlockTransaction(), event.getBlockHeight());
+        } else if(headersForm.getPsbt() == null) {
+            //What an earlier server reported is fetched again from this one, so nothing is shown until it answers
+            verificationRequestedPair = null;
+            verificationUnprovenPair = null;
+            verificationService = null;
+            blockchainForm.setVisible(false);
         }
     }
 

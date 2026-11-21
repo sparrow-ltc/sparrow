@@ -103,6 +103,13 @@ public class BitcoindTransport implements Transport, Closeable {
         } catch(EOFException e) {
             //Also thrown where the node resets the connection instead of closing it, as the client reports a failed read or write on a connected socket as its end
             throw new IOException(closedMessage, e);
+        } catch(SocketException e) {
+            //The close can also reset the connection before the connect completes, where other socket errors (unreachable network, local firewall) never reached the node,
+            //and a reset from a proxy is the proxy's own failure
+            if(proxy == null && e.getMessage() != null && e.getMessage().contains("Connection reset")) {
+                throw new IOException(closedMessage, e);
+            }
+            throw e;
         }
 
         int statusCode = httpResponse.statusCode();
@@ -244,6 +251,8 @@ public class BitcoindTransport implements Transport, Closeable {
             return new File(bitcoindDir, "testnet3");
         } else if(Network.get() == Network.TESTNET4 && Files.exists(Path.of(bitcoindDir.getAbsolutePath(), "testnet4", COOKIE_FILENAME))) {
             return new File(bitcoindDir, "testnet4");
+        } else if(Network.get() == Network.TESTNET5 && Files.exists(Path.of(bitcoindDir.getAbsolutePath(), "testnet5", COOKIE_FILENAME))) {
+            return new File(bitcoindDir, "testnet5");
         } else if(Network.get() == Network.REGTEST && Files.exists(Path.of(bitcoindDir.getAbsolutePath(), "regtest", COOKIE_FILENAME))) {
             return new File(bitcoindDir, "regtest");
         } else if(Network.get() == Network.SIGNET && Files.exists(Path.of(bitcoindDir.getAbsolutePath(), "signet", COOKIE_FILENAME))) {

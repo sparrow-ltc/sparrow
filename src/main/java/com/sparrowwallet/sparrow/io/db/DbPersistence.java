@@ -46,6 +46,7 @@ import org.h2.value.Value;
 import org.h2.value.VersionedValue;
 import org.jdbi.v3.core.Jdbi;
 import org.jdbi.v3.core.h2.H2DatabasePlugin;
+import org.jdbi.v3.core.statement.StatementExceptions;
 import org.jdbi.v3.sqlobject.SqlObjectPlugin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -127,6 +128,7 @@ public class DbPersistence implements Persistence {
     private Wallet masterWallet;
     private final Map<Wallet, DirtyPersistables> dirtyPersistablesMap = new HashMap<>();
     private ExecutorService updateExecutor;
+    private volatile ECKey passwordFailureKey;  //the storage key a failed password change was last reported for, by a full save or the update thread
 
     public DbPersistence() {
         EventManager.get().register(this);
@@ -147,9 +149,8 @@ public class DbPersistence implements Persistence {
         ECKey encryptionKey = getEncryptionKey(password, storage.getWalletFile(), alreadyDerivedKey);
 
         try {
-            validateSchema(storage, MASTER_SCHEMA, encryptionKey);
+            validateFile(storage, encryptionKey);
             migrate(storage, MASTER_SCHEMA, encryptionKey);
-            validateSchema(storage, MASTER_SCHEMA, encryptionKey);
 
             Jdbi jdbi = getJdbi(storage, getFilePassword(encryptionKey));
             masterWallet = jdbi.withHandle(handle -> {
@@ -162,6 +163,7 @@ public class DbPersistence implements Persistence {
             }
 
             Map<WalletAndKey, Storage> childWallets = loadChildWallets(storage, masterWallet, encryptionKey);
+            validateFile(storage, encryptionKey);
             masterWallet.setChildWallets(childWallets.keySet().stream().map(WalletAndKey::getWallet).collect(Collectors.toList()));
 
             createUpdateExecutor(masterWallet);
@@ -182,9 +184,7 @@ public class DbPersistence implements Persistence {
         List<String> childSchemas = schemas.stream().filter(schema -> schema.startsWith(WALLET_SCHEMA_PREFIX) && !schema.equals(MASTER_SCHEMA)).collect(Collectors.toList());
         Map<WalletAndKey, Storage> childWallets = new TreeMap<>();
         for(String schema : childSchemas) {
-            validateSchema(storage, schema, encryptionKey);
             migrate(storage, schema, encryptionKey);
-            validateSchema(storage, schema, encryptionKey);
 
             Jdbi childJdbi = getJdbi(storage, getFilePassword(encryptionKey));
             Wallet wallet = childJdbi.withHandle(handle -> {
@@ -205,7 +205,7 @@ public class DbPersistence implements Persistence {
         File walletFile = storage.getWalletFile();
         walletFile = renameToDbFile(walletFile);
 
-        updatePassword(storage, null);
+        updatePasswordForSave(storage, null);
         cleanAndAddWallet(storage, wallet, null);
 
         return walletFile;
@@ -217,13 +217,24 @@ public class DbPersistence implements Persistence {
         walletFile = renameToDbFile(walletFile);
 
         boolean existing = walletFile.exists();
-        updatePassword(storage, encryptionPubKey);
+        updatePasswordForSave(storage, encryptionPubKey);
         cleanAndAddWallet(storage, wallet, getFilePassword(encryptionPubKey));
         if(!existing) {
             writeBinaryHeader(walletFile);
         }
 
         return walletFile;
+    }
+
+    private void updatePasswordForSave(Storage storage, ECKey encryptionPubKey) throws StorageException {
+        try {
+            updatePassword(storage, encryptionPubKey);
+            passwordFailureKey = null;
+        } catch(StorageException e) {
+            //The caller of a save reports this failure, so the update thread retrying the change does not report it again
+            passwordFailureKey = storage.getEncryptionPubKey();
+            throw e;
+        }
     }
 
     @Override
@@ -234,12 +245,14 @@ public class DbPersistence implements Persistence {
     @Override
     public void updateWallet(Storage storage, Wallet wallet, ECKey encryptionPubKey) throws StorageException {
         updateExecutor.execute(() -> {
+            //An update can wait behind others while the wallet is saved with a password added or removed. The key it was queued with is then
+            //no longer the key of the storage, and it leaves the encryption of the file as it finds it
+            ECKey storagePubKey = storage.getEncryptionPubKey();
+            boolean queuedWithStorageKey = Objects.equals(encryptionPubKey, Storage.NO_PASSWORD_KEY.equals(storagePubKey) ? null : storagePubKey);
+            String newPassword = getFilePassword(encryptionPubKey);
+            boolean passwordUpdated = false;
+
             try {
-                //An update can wait behind others while the wallet is saved with a password added or removed. The key it was queued with is then
-                //no longer the key of the storage, and it leaves the encryption of the file as it finds it
-                ECKey storagePubKey = storage.getEncryptionPubKey();
-                boolean queuedWithStorageKey = Objects.equals(encryptionPubKey, Storage.NO_PASSWORD_KEY.equals(storagePubKey) ? null : storagePubKey);
-                String newPassword = getFilePassword(encryptionPubKey);
                 String currentPassword = getDatasourcePassword();
 
                 if(!queuedWithStorageKey) {
@@ -247,21 +260,35 @@ public class DbPersistence implements Persistence {
                 } else if(dataSource != null && currentPassword != null && newPassword == null) {
                     //Removing encryption: write data first
                     update(storage, wallet, currentPassword);
+                    passwordUpdated = true;
                     updatePassword(storage, encryptionPubKey);
                 } else {
                     //Adding encryption or no change: change file first
+                    passwordUpdated = true;
                     updatePassword(storage, encryptionPubKey);
                     update(storage, wallet, newPassword);
                 }
+
+                if(queuedWithStorageKey) {
+                    passwordFailureKey = null;
+                    storage.encryptionKeySaved(storagePubKey);
+                }
             } catch(Exception e) {
                 log.error("Error updating wallet db", e);
+
+                //A password changed without a full save of the wallet reaches the file only here, after the change has been reported as made.
+                //Each later update tries the change again, so it is reported once for each password rather than on every attempt
+                if(passwordUpdated && !Objects.equals(getDatasourcePassword(), newPassword) && !Objects.equals(storagePubKey, passwordFailureKey)) {
+                    passwordFailureKey = storagePubKey;
+                    EventManager.get().post(new WalletPasswordChangeFailedEvent(wallet, newPassword == null, e));
+                }
             }
         });
     }
 
     private synchronized void createUpdateExecutor(Wallet masterWallet) {
         if(updateExecutor == null) {
-            BasicThreadFactory factory = BasicThreadFactory.builder().namingPattern(masterWallet.getFullName() + "-dbupdater").daemon(true).priority(Thread.NORM_PRIORITY).build();
+            BasicThreadFactory factory = BasicThreadFactory.builder().namingPattern(masterWallet.getFullName().replace("%", "%%") + "-dbupdater").daemon(true).priority(Thread.NORM_PRIORITY).build();
             updateExecutor = Executors.newSingleThreadExecutor(factory);
         }
     }
@@ -326,11 +353,13 @@ public class DbPersistence implements Persistence {
                         if(addressNode.getId() == null) {
                             WalletNode purposeNode = wallet.getNode(addressNode.getKeyPurpose());
                             if(purposeNode.getId() == null) {
-                                long purposeNodeId = walletNodeDao.insertWalletNode(purposeNode.getDerivationPath(), purposeNode.getLabel(), wallet.getId(), null, null, null);
+                                long purposeNodeId = walletNodeDao.insertWalletNode(purposeNode.getDerivationPath(), walletNodeDao.truncate(purposeNode.getLabel()),
+                                        wallet.getId(), null, null, null);
                                 purposeNode.setId(purposeNodeId);
                             }
 
-                            long nodeId = walletNodeDao.insertWalletNode(addressNode.getDerivationPath(), addressNode.getLabel(), wallet.getId(), purposeNode.getId(), addressNode.getAddressData(), addressNode.getSilentPaymentTweak());
+                            long nodeId = walletNodeDao.insertWalletNode(addressNode.getDerivationPath(), walletNodeDao.truncate(addressNode.getLabel()), wallet.getId(),
+                                    purposeNode.getId(), addressNode.getAddressData(), addressNode.getSilentPaymentTweak());
                             addressNode.setId(nodeId);
                         } else if(addressNode.getAddress() != null) {
                             walletNodeDao.updateNodeAddressData(addressNode.getId(), addressNode.getAddressData());
@@ -385,11 +414,13 @@ public class DbPersistence implements Persistence {
                             if(addressNode.getId() == null) {
                                 WalletNode purposeNode = wallet.getNode(addressNode.getKeyPurpose());
                                 if(purposeNode.getId() == null) {
-                                    long purposeNodeId = walletNodeDao.insertWalletNode(purposeNode.getDerivationPath(), purposeNode.getLabel(), wallet.getId(), null, null, null);
+                                    long purposeNodeId = walletNodeDao.insertWalletNode(purposeNode.getDerivationPath(), walletNodeDao.truncate(purposeNode.getLabel()),
+                                            wallet.getId(), null, null, null);
                                     purposeNode.setId(purposeNodeId);
                                 }
 
-                                long nodeId = walletNodeDao.insertWalletNode(addressNode.getDerivationPath(), addressNode.getLabel(), wallet.getId(), purposeNode.getId(), addressNode.getAddressData(), addressNode.getSilentPaymentTweak());
+                                long nodeId = walletNodeDao.insertWalletNode(addressNode.getDerivationPath(), walletNodeDao.truncate(addressNode.getLabel()), wallet.getId(),
+                                        purposeNode.getId(), addressNode.getAddressData(), addressNode.getSilentPaymentTweak());
                                 addressNode.setId(nodeId);
                             } else if(addressNode.getAddress() != null) {
                                 walletNodeDao.updateNodeAddressData(addressNode.getId(), addressNode.getAddressData());
@@ -445,7 +476,7 @@ public class DbPersistence implements Persistence {
                 if(!dirtyPersistables.labelKeystores.isEmpty()) {
                     KeystoreDao keystoreDao = handle.attach(KeystoreDao.class);
                     for(Keystore keystore : dirtyPersistables.labelKeystores) {
-                        keystoreDao.updateLabel(keystore.getLabel(), keystore.getId());
+                        keystoreDao.updateLabel(keystoreDao.truncate(keystore.getLabel()), keystore.getId());
                     }
                 }
 
@@ -525,13 +556,18 @@ public class DbPersistence implements Persistence {
                         }
                     }
 
-                    MVMap.Builder<Long, VersionedValue<?>> metaTableBuilder = new MVMap.Builder<>();
+                    DataType<?> keyType;
+                    DataType<?> valueType;
                     if(undoRecords != null && undoRecords.mapIds.contains(metaTableId)) {
-                        metaTableBuilder.keyType((DataType)undoRecords.getKeyType(metaTableId)).valueType((DataType)undoRecords.getValueType(metaTableId));
+                        keyType = undoRecords.getKeyType(metaTableId);
+                        valueType = undoRecords.getValueType(metaTableId);
                     } else {
                         RowFactory rowFactory = RowFactory.getDefaultRowFactory().createRowFactory(null, CompareMode.getInstance(null, 0), null, H2_META_TABLE_COLUMNS, null, false);
-                        metaTableBuilder.keyType(LongDataType.INSTANCE).valueType((DataType)new VersionedValueType<>(rowFactory.getRowDataType()));
+                        keyType = LongDataType.INSTANCE;
+                        valueType = new VersionedValueType<>(rowFactory.getRowDataType());
                     }
+                    @SuppressWarnings("unchecked")
+                    MVMap.Builder<Long, VersionedValue<?>> metaTableBuilder = new MVMap.Builder<Long, VersionedValue<?>>().keyType((DataType<Long>)keyType).valueType((DataType<VersionedValue<?>>)valueType);
                     MVMap<Long, VersionedValue<?>> metaTable = store.openMap(H2_META_TABLE_MAP, metaTableBuilder);
                     List<String> statements = new ArrayList<>();
                     Cursor<Long, VersionedValue<?>> cursor = metaTable.cursor(null);
@@ -601,7 +637,8 @@ public class DbPersistence implements Persistence {
         }
     }
 
-    private void validateSchema(Storage storage, String schema, ECKey encryptionKey) throws StorageException {
+    //Checks every schema in the file at once, before any is migrated and again once all have been, since the cost of a query here grows with the whole file
+    private void validateFile(Storage storage, ECKey encryptionKey) throws StorageException {
         Jdbi jdbi = getJdbi(storage, getFilePassword(encryptionKey));
         try {
             jdbi.useHandle(handle -> {
@@ -615,45 +652,45 @@ public class DbPersistence implements Persistence {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected database triggers: " + String.join(", ", triggers) + "."));
                 }
 
-                List<String> checkConstraints = handle.createQuery("SELECT CHECK_CLAUSE FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS WHERE UPPER(CONSTRAINT_SCHEMA) = UPPER(:schema)")
-                        .bind("schema", schema).mapTo(String.class).list();
+                List<String> checkConstraints = handle.createQuery("SELECT CHECK_CLAUSE FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA <> 'INFORMATION_SCHEMA'")
+                        .mapTo(String.class).list();
                 if(!checkConstraints.isEmpty()) {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected check constraints: " + String.join(", ", checkConstraints) + "."));
                 }
 
-                List<String> nonBaseTables = handle.createQuery("SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE UPPER(TABLE_SCHEMA) = UPPER(:schema) "
-                        + "AND TABLE_TYPE <> 'BASE TABLE'").bind("schema", schema)
+                List<String> nonBaseTables = handle.createQuery("SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' "
+                        + "AND TABLE_TYPE <> 'BASE TABLE'")
                         .map((rs, ctx) -> rs.getString("TABLE_NAME") + " (" + rs.getString("TABLE_TYPE") + ")").list();
                 if(!nonBaseTables.isEmpty()) {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected database object types: " + String.join(", ", nonBaseTables) + "."));
                 }
 
-                List<String> linkedTables = handle.createQuery("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE UPPER(TABLE_SCHEMA) = UPPER(:schema) AND STORAGE_TYPE = 'TABLE LINK'")
-                        .bind("schema", schema).mapTo(String.class).list();
+                List<String> linkedTables = handle.createQuery("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' AND STORAGE_TYPE = 'TABLE LINK'")
+                        .mapTo(String.class).list();
                 if(!linkedTables.isEmpty()) {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected linked tables: " + String.join(", ", linkedTables) + "."));
                 }
 
-                List<String> engineTables = handle.createQuery("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE UPPER(TABLE_SCHEMA) = UPPER(:schema) "
-                        + "AND TABLE_TYPE = 'BASE TABLE' AND (TABLE_CLASS IS NULL OR TABLE_CLASS <> :tableClass)").bind("schema", schema).bind("tableClass", H2_BASE_TABLE_CLASS).mapTo(String.class).list();
+                List<String> engineTables = handle.createQuery("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' "
+                        + "AND TABLE_TYPE = 'BASE TABLE' AND (TABLE_CLASS IS NULL OR TABLE_CLASS <> :tableClass)").bind("tableClass", H2_BASE_TABLE_CLASS).mapTo(String.class).list();
                 if(!engineTables.isEmpty()) {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected table storage engines: " + String.join(", ", engineTables) + "."));
                 }
 
-                List<String> synonyms = handle.createQuery("SELECT SYNONYM_NAME FROM INFORMATION_SCHEMA.SYNONYMS WHERE UPPER(SYNONYM_SCHEMA) = UPPER(:schema)")
-                        .bind("schema", schema).mapTo(String.class).list();
+                List<String> synonyms = handle.createQuery("SELECT SYNONYM_NAME FROM INFORMATION_SCHEMA.SYNONYMS WHERE SYNONYM_SCHEMA <> 'INFORMATION_SCHEMA'")
+                        .mapTo(String.class).list();
                 if(!synonyms.isEmpty()) {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected synonyms: " + String.join(", ", synonyms) + "."));
                 }
 
-                List<String> generatedColumns = handle.createQuery("SELECT TABLE_NAME || '.' || COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE UPPER(TABLE_SCHEMA) = UPPER(:schema) AND GENERATION_EXPRESSION IS NOT NULL")
-                        .bind("schema", schema).mapTo(String.class).list();
+                List<String> generatedColumns = handle.createQuery("SELECT TABLE_NAME || '.' || COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' AND GENERATION_EXPRESSION IS NOT NULL")
+                        .mapTo(String.class).list();
                 if(!generatedColumns.isEmpty()) {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected generated columns: " + String.join(", ", generatedColumns) + "."));
                 }
 
                 List<String[]> defaultColumns = handle.createQuery("SELECT TABLE_NAME, COLUMN_NAME, COLUMN_DEFAULT, COLUMN_ON_UPDATE FROM INFORMATION_SCHEMA.COLUMNS "
-                        + "WHERE UPPER(TABLE_SCHEMA) = UPPER(:schema) AND (COLUMN_DEFAULT IS NOT NULL OR COLUMN_ON_UPDATE IS NOT NULL)").bind("schema", schema)
+                        + "WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' AND (COLUMN_DEFAULT IS NOT NULL OR COLUMN_ON_UPDATE IS NOT NULL)")
                         .map((rs, ctx) -> new String[] {rs.getString("TABLE_NAME"), rs.getString("COLUMN_NAME"), rs.getString("COLUMN_DEFAULT"), rs.getString("COLUMN_ON_UPDATE")}).list();
                 List<String> unexpectedDefaults = new ArrayList<>();
                 for(String[] column : defaultColumns) {
@@ -676,9 +713,9 @@ public class DbPersistence implements Persistence {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected database constants: " + String.join(", ", constants) + "."));
                 }
 
-                List<String> serializedColumns = handle.createQuery("SELECT TABLE_NAME || '.' || COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE UPPER(TABLE_SCHEMA) = UPPER(:schema) AND DATA_TYPE = 'JAVA_OBJECT' "
-                        + "UNION SELECT OBJECT_NAME FROM INFORMATION_SCHEMA.ELEMENT_TYPES WHERE UPPER(OBJECT_SCHEMA) = UPPER(:schema) AND OBJECT_TYPE = 'TABLE' AND DATA_TYPE = 'JAVA_OBJECT'")
-                        .bind("schema", schema).mapTo(String.class).list();
+                List<String> serializedColumns = handle.createQuery("SELECT TABLE_NAME || '.' || COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' AND DATA_TYPE = 'JAVA_OBJECT' "
+                        + "UNION SELECT OBJECT_NAME FROM INFORMATION_SCHEMA.ELEMENT_TYPES WHERE OBJECT_SCHEMA <> 'INFORMATION_SCHEMA' AND OBJECT_TYPE = 'TABLE' AND DATA_TYPE = 'JAVA_OBJECT'")
+                        .mapTo(String.class).list();
                 if(!serializedColumns.isEmpty()) {
                     throw new RuntimeException(new StorageException("Wallet file contains unexpected serialized object columns: " + String.join(", ", serializedColumns) + "."));
                 }
@@ -965,6 +1002,7 @@ public class DbPersistence implements Persistence {
         Jdbi jdbi = Jdbi.create(getDataSource(storage, password));
         jdbi.installPlugin(new H2DatabasePlugin());
         jdbi.installPlugin(new SqlObjectPlugin());
+        jdbi.getConfig(StatementExceptions.class).setMessageRendering(StatementExceptions.MessageRendering.NONE);
 
         return jdbi;
     }
@@ -1011,10 +1049,11 @@ public class DbPersistence implements Persistence {
 
     private HikariDataSource createDataSource(File walletFile, String password) throws StorageException {
         try {
-            validateStore(walletFile, password);
+            File dbName = getDbName(walletFile);
+            validateStore(new File(dbName.getPath() + "." + getType().getExtension()), password);
             Class.forName("org.h2.Driver");
             HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(getUrl(walletFile, password));
+            config.setJdbcUrl(getUrl(dbName, password));
             config.setUsername(H2_USER);
             config.setPassword(password == null ? H2_PASSWORD : password + " " + H2_PASSWORD);
             return new HikariDataSource(config);
@@ -1034,7 +1073,7 @@ public class DbPersistence implements Persistence {
         }
     }
 
-    private String getUrl(File walletFile, String password) throws StorageException {
+    private File getDbName(File walletFile) throws StorageException {
         File dbFile = walletFile.getAbsoluteFile();
         if(JDBC_URL_INJECTION_PATTERN.matcher(dbFile.getPath()).find()) {
             throw new StorageException("Wallet file path contains invalid characters");
@@ -1042,7 +1081,15 @@ public class DbPersistence implements Persistence {
 
         //H2 appends the extension to the database name in the URL, so only a trailing extension can be removed - removing every occurrence would
         //open a different file to the one tracked here, as would removing one from a directory name
-        File dbName = new File(dbFile.getParentFile(), getWalletName(dbFile, null));
+        String walletName = getWalletName(dbFile, null);
+        if(walletName.isEmpty()) {
+            throw new StorageException("Invalid wallet file name " + dbFile.getName());
+        }
+
+        return new File(dbFile.getParentFile(), walletName);
+    }
+
+    private String getUrl(File dbName, String password) {
         return "jdbc:h2:" + dbName.getPath() + ";INIT=SET TRACE_LEVEL_FILE=4;TRACE_LEVEL_FILE=4;DEFRAG_ALWAYS=true;MAX_COMPACT_TIME=5000;DATABASE_TO_UPPER=false" + (password == null ? "" : ";CIPHER=AES");
     }
 
