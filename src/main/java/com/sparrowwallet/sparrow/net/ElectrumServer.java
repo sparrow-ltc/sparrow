@@ -1172,7 +1172,7 @@ public class ElectrumServer {
             demoteReferences(nodeTransactionMap, refusedNow);
         }
 
-        if(toProve.isEmpty()) {
+        if(toProve.isEmpty() || wallet.getScriptType() == ScriptType.MWEB) {
             return Collections.emptyMap();
         }
 

@@ -357,16 +357,16 @@ public class WalletForm {
         addReprovenNodes(currentWallet, previousWallet, historyChangedNodes);
 
         boolean changed = false;
-        if(!historyChangedNodes.isEmpty() || !nestedHistoryChangedNodes.isEmpty()) {
+        if(blockHeight != null && !blockHeight.equals(previousWallet.getStoredBlockHeight())) {
+            Platform.runLater(() -> EventManager.get().post(new WalletBlockHeightChangedEvent(currentWallet, blockHeight)));
+            changed = true;
+        }
+
+        if(!historyChangedNodes.isEmpty() || !nestedHistoryChangedNodes.isEmpty() || changed) {
             Platform.runLater(() -> EventManager.get().post(new WalletHistoryChangedEvent(currentWallet, storage, historyChangedNodes, nestedHistoryChangedNodes)));
             if(!historyChangedNodes.isEmpty()) {
                 changed = true;
             }
-        }
-
-        if(blockHeight != null && !blockHeight.equals(previousWallet.getStoredBlockHeight())) {
-            Platform.runLater(() -> EventManager.get().post(new WalletBlockHeightChangedEvent(currentWallet, blockHeight)));
-            changed = true;
         }
 
         if(changed) {
