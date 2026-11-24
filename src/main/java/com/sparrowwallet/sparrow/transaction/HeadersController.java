@@ -655,6 +655,7 @@ public class HeadersController extends TransactionFormController implements Init
             List<TransactionOutput> txOutputs = headersForm.getTransaction().getOutputs();
             List<PSBTOutput> psbtOutputs = headersForm.getPsbt().getPsbtOutputs();
             for(int i = 0; i < txOutputs.size(); i++) {
+                if(i >= psbtOutputs.size()) break;
                 if(psbtOutputs.get(i).getSilentPaymentAddress() != null && txOutputs.get(i).getScriptBytes().length == 0) {
                     virtualSize += SilentPayment.OUTPUT_SCRIPT_LENGTH;
                 }
