@@ -974,7 +974,7 @@ public class HeadersController extends TransactionFormController implements Init
             signedByField.setVisible(false);
         }
 
-        var isMweb = false;
+        var isMweb = blockTransaction.getSpending().isEmpty();
         if(headersForm.getWalletTransaction() != null && headersForm.getWalletTransaction().getWallet() != null) {
             Wallet wallet = headersForm.getWalletTransaction().getWallet();
             isMweb = wallet.getScriptType() == ScriptType.MWEB;
