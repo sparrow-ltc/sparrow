@@ -40,7 +40,7 @@ public class TransactionData {
 
     public TransactionData(String name, BlockTransaction blockTransaction) {
         //Viewing a transaction must not be able to change the copy the wallet stores
-        this(name, blockTransaction.getTransaction() == null ? null : new Transaction(blockTransaction.getTransaction().bitcoinSerialize()));
+        this(name, blockTransaction.getTransaction() == null ? null : new Transaction(blockTransaction.getTransaction().bitcoinSerializeFull()));
         this.blockTransaction = blockTransaction;
     }
 
