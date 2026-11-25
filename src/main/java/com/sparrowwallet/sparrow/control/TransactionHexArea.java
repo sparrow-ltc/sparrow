@@ -154,7 +154,7 @@ public class TransactionHexArea extends ReadOnlyCodeArea {
             cursor = addSegment(segments, cursor, (int) scriptLen.value * 2, i, "output-" + getIndexedStyleClass(i, selectedOutputIndex, "pubkeyscript"));
         }
 
-        if(transaction.isSegwit()) {
+        if((transaction.getSegwitFlag() & 1) > 0) {
             for (int i = 0; i < transaction.getInputs().size(); i++) {
                 TransactionInput input = transaction.getInputs().get(i);
                 //Per BIP141 all txins have a witness, serialized as an empty one where the input has none
@@ -171,7 +171,9 @@ public class TransactionHexArea extends ReadOnlyCodeArea {
             }
         }
 
-        cursor = addSegment(segments, cursor, fullHex.length() - cursor - 8, "mweb");
+        if((transaction.getSegwitFlag() & 8) > 0) {
+            cursor = addSegment(segments, cursor, fullHex.length() - cursor - 8, "mweb");
+        }
 
         //Locktime
         cursor = addSegment(segments, cursor, 8, "locktime");
