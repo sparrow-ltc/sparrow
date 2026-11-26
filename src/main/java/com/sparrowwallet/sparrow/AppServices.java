@@ -57,6 +57,7 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.text.Font;
+import javafx.stage.FileChooser;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
 import javafx.stage.Window;
@@ -346,7 +347,7 @@ public class AppServices {
 
             if(failEvent.getSource().getException() instanceof TlsServerException tlsServerException && failEvent.getSource().getException().getCause() != null) {
                 connectionService.setRestartOnFailure(false);
-                if(tlsServerException.getCause().getMessage().contains("PKIX path building failed")) {
+                if(tlsServerException.isCertificatePathFailure()) {
                     File crtFile = Config.get().getElectrumServerCert();
                     if(crtFile != null && Config.get().getServerType() == ServerType.ELECTRUM_SERVER) {
                         AppServices.showErrorDialog("SSL Handshake Failed", "The configured server certificate at " + crtFile.getAbsolutePath() + " did not match the certificate provided by the server at " + tlsServerException.getServer().getHost() + "." +
@@ -578,6 +579,10 @@ public class AppServices {
     //Until internal Tor is running there is no proxy for requests that must use it, and these would otherwise be made directly
     public static boolean isWaitingForTor() {
         return Config.get().requiresInternalTor() && !isTorRunning();
+    }
+
+    public static boolean isTorStarting() {
+        return get().torService != null && get().torService.getState() == Worker.State.RUNNING;
     }
 
     public static boolean isUsingProxy() {
@@ -1166,6 +1171,17 @@ public class AppServices {
         return Stage.getWindows().stream().filter(Window::isFocused).findFirst().orElse(get().walletWindows.keySet().iterator().hasNext() ? get().walletWindows.keySet().iterator().next() : (Stage.getWindows().iterator().hasNext() ? Stage.getWindows().iterator().next() : null));
     }
 
+    public static void setInitialFileName(FileChooser fileChooser, String fileName, String... otherExtensions) {
+        fileChooser.setInitialFileName(fileName);
+
+        //The macOS save panel removes the extension from the initial file name, and only restores it from a matching extension filter
+        int dot = fileName.lastIndexOf('.');
+        if(OsType.getCurrent() == OsType.MACOS && dot > 0 && dot < fileName.length() - 1) {
+            Stream.concat(Stream.of(fileName.substring(dot + 1)), Stream.of(otherExtensions)).forEach(extension ->
+                    fileChooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(extension.toUpperCase(Locale.ROOT) + " files", "*." + extension)));
+        }
+    }
+
     public static void moveToActiveWindowScreen(Dialog<?> dialog) {
         Window activeWindow = getActiveWindow();
         if(activeWindow != null) {
@@ -1430,11 +1446,16 @@ public class AppServices {
 
     private static Wallet selectWallet(List<PolicyType> policyTypes, List<ScriptType> scriptTypes, boolean taprootAllowed, boolean privateKeysRequired, String actionDescription, boolean alwaysAsk) {
         Wallet wallet = null;
-        List<Wallet> wallets = get().getOpenWallets().keySet().stream().filter(w -> w.isValid() && policyTypes.contains(w.getPolicyType()) && scriptTypes.contains(w.getScriptType())
+        List<Wallet> eligibleWallets = get().getOpenWallets().keySet().stream().filter(w -> w.isValid() && policyTypes.contains(w.getPolicyType()) && scriptTypes.contains(w.getScriptType())
                 && (!privateKeysRequired || w.getKeystores().stream().allMatch(Keystore::hasPrivateKey))).collect(Collectors.toList());
-        if(wallets.isEmpty()) {
+        Set<Wallet> lockedWallets = get().walletWindows.values().stream().flatMap(List::stream).filter(walletTabData -> walletTabData.getWalletForm().isLocked())
+                .map(WalletTabData::getWallet).collect(Collectors.toSet());
+        List<Wallet> wallets = eligibleWallets.stream().filter(w -> !lockedWallets.contains(w)).collect(Collectors.toList());
+        if(eligibleWallets.isEmpty()) {
             boolean taprootOpen = get().getOpenWallets().keySet().stream().anyMatch(w -> w.getScriptType() == ScriptType.P2TR);
             showErrorDialog("No wallet available", "Open a" + (taprootOpen && !taprootAllowed ? " non-Taproot" : "") + (privateKeysRequired ? " software" : "") + " wallet to " + actionDescription + ".");
+        } else if(wallets.isEmpty()) {
+            showErrorDialog("Wallet locked", "Unlock a wallet to " + actionDescription + ".");
         } else if(wallets.size() == 1 && !alwaysAsk) {
             wallet = wallets.iterator().next();
         } else {

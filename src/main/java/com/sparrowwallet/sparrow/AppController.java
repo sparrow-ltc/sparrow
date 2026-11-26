@@ -789,7 +789,7 @@ public class AppController implements Initializable {
                    fileName += ".txn";
                }
 
-               fileChooser.setInitialFileName(fileName);
+               AppServices.setInitialFileName(fileChooser, fileName);
             }
 
             AppServices.moveToActiveWindowScreen(window, 800, 450);
@@ -863,10 +863,10 @@ public class AppController implements Initializable {
                 }
 
                 if(asText) {
-                    fileName += ".txt";
+                    AppServices.setInitialFileName(fileChooser, fileName, "txt");
+                } else {
+                    AppServices.setInitialFileName(fileChooser, fileName);
                 }
-
-                fileChooser.setInitialFileName(fileName);
             }
 
             AppServices.moveToActiveWindowScreen(window, 800, 450);
@@ -2125,6 +2125,17 @@ public class AppController implements Initializable {
             } catch(PSBTSignatureException e) {
                 AppServices.showErrorDialog("Invalid PSBT", e.getMessage());
                 return;
+            }
+
+            try {
+                AppServices.verifySilentPaymentScripts(null, psbt);
+            } catch(InvalidSilentPaymentException e) {
+                Optional<ButtonType> result = AppServices.showWarningDialog("Unverified Silent Payment Outputs",
+                        "The silent payments outputs of this PSBT cannot be verified, so it cannot be signed, exported or broadcast. These outputs may not pay the addresses they are shown as paying.\n\n" +
+                        e.getMessage() + "\n\nOpen the transaction to inspect it?", ButtonType.YES, ButtonType.NO);
+                if(result.isEmpty() || result.get() != ButtonType.YES) {
+                    return;
+                }
             }
 
             try {

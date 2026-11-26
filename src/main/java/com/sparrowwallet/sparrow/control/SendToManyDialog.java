@@ -184,7 +184,10 @@ public class SendToManyDialog extends Dialog<List<Payment>> {
     }
 
     private void getPayments() {
-        if(needsResolution() && Config.get().hasServer() && !AppServices.isConnected() && !AppServices.isConnecting()) {
+        if(needsResolution() && AppServices.isTorStarting()) {
+            AppServices.showErrorDialog("Tor Starting", "Sparrow connects once Tor has started. Try again once Sparrow is connected to resolve the addresses.");
+            return;
+        } else if(needsResolution() && Config.get().hasServer() && !AppServices.isConnected() && !AppServices.isConnecting()) {
             if(Config.get().getConnectToResolve() == null || Config.get().getConnectToResolve() == Boolean.FALSE) {
                 Platform.runLater(() -> {
                     ConfirmationAlert confirmationAlert = new ConfirmationAlert("Connect to resolve?", "You are currently offline. Connect to resolve the addresses?", ButtonType.NO, ButtonType.YES);
@@ -645,6 +648,8 @@ public class SendToManyDialog extends Dialog<List<Payment>> {
                 return new SilentPayment(dnsPayment.bitcoinURI().getSilentPaymentAddress(), label, value, sendMax);
             } else if(dnsPayment.hasAddress()) {
                 return new Payment(dnsPayment.bitcoinURI().getAddress(), label, value, sendMax);
+            } else if(dnsPayment.hasMisplacedSilentPaymentAddress()) {
+                throw new IllegalArgumentException("Payment to " + dnsPayment + " is set incorrectly, placing its silent payment address under the parameter for a different network.");
             } else if(dnsPayment.hasOtherNetworkSilentPaymentAddress()) {
                 throw new IllegalArgumentException("Payment to " + dnsPayment + " contains a silent payment address for a different network.");
             } else {

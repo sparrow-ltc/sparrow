@@ -3327,6 +3327,10 @@ public class ElectrumServer {
                 return new ServerCapability(true, true, true);
             }
 
+            if(server.startsWith("/libbitcoin:")) {
+                return new ServerCapability(true, true, true);
+            }
+
             if(server.startsWith("cormorant")) {
                 return new ServerCapability(true, false, true, false, true);
             }

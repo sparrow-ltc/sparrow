@@ -12,26 +12,26 @@ Work on resolving both of these issues is ongoing.
 ### Install Java
 
 Because Sparrow-LTC bundles a Java runtime in the release binaries, it is essential to have the same version of Java installed when creating the release.
-For v1.6.6 to v1.9.1, this was Eclipse Temurin 18.0.1+10. For v2.0.0 to v2.3.1, this was Eclipse Temurin 22.0.2+9. For v2.4.0 to v2.5.5, this was Eclipse Temurin 25.0.2+10. For v2.5.6 and later, Eclipse Temurin 25.0.5+8 is used.
+For v1.6.6 to v1.9.1, this was Eclipse Temurin 18.0.1+10. For v2.0.0 to v2.3.1, this was Eclipse Temurin 22.0.2+9. For v2.4.0 to v2.5.5, this was Eclipse Temurin 25.0.2+10. For v2.5.6, this was Eclipse Temurin 25.0.5+8. For v2.5.7 and later, Eclipse Temurin 25.0.5.1+2 is used.
 
 Note: Do not install Java using a system package manager (e.g. apt, dnf, rpm). 
 Linux packages replace the JDK's bundled `cacerts` file with a symlink to the system CA certificates, which differ from those in the release tarballs and will produce a non-reproducible build.
 
 #### Java from Adoptium github repo
 
-It is available for all supported platforms from [Eclipse Temurin 25.0.5+8](https://github.com/adoptium/temurin25-binaries/releases/tag/jdk-25.0.5%2B8).
+It is available for all supported platforms from [Eclipse Temurin 25.0.5.1+2](https://github.com/adoptium/temurin25-binaries/releases/tag/jdk-25.0.5.1%2B2).
 
 For reference, the downloads are as follows:
-- [Linux x64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz)
-- [Linux aarch64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.5_8.tar.gz)
-- [MacOS x64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_mac_hotspot_25.0.5_8.tar.gz)
-- [MacOS aarch64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5_8.tar.gz)
-- [Windows x64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_windows_hotspot_25.0.5_8.zip)
+- [Linux x64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz)
+- [Linux aarch64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.5.1_2.tar.gz)
+- [MacOS x64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_mac_hotspot_25.0.5.1_2.tar.gz)
+- [MacOS aarch64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz)
+- [Windows x64](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_windows_hotspot_25.0.5.1_2.zip)
 
 On Linux, extract the tarball and set `JAVA_HOME` to use it for the build:
 ```shell
-tar -xzf OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz
-export JAVA_HOME=$PWD/jdk-25.0.5+8
+tar -xzf OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz
+export JAVA_HOME=$PWD/jdk-25.0.5.1+2
 export PATH=$JAVA_HOME/bin:$PATH
 ```
 
@@ -41,7 +41,7 @@ An alternative option for all platforms is to use the [sdkman.io](https://sdkman
 See the installation [instructions here](https://sdkman.io/install).
 Once installed, run
 ```shell
-sdk install java 25.0.5.0+8-tem
+sdk install java 25.0.5.1+2-tem
 ```
 
 ### Other requirements
@@ -56,7 +56,7 @@ sudo apt install -y rpm fakeroot binutils
 First, assign a temporary variable in your shell for the specific release you want to build. For the current one specify:
 
 ```shell
-GIT_TAG="2.5.6"
+GIT_TAG="2.5.7"
 ```
 
 The project can then be initially cloned as follows:
@@ -90,6 +90,21 @@ cd {yourPathToSparrow}/sparrow  # if you aren't already in the sparrow folder
 ```
 
 The binaries (and installers) will be placed in the `build/jpackage` folder.
+
+#### Building v2.5.3 to v2.5.6
+
+These releases check the checksums of their dependencies against those recorded in `gradle/verification-metadata.xml`.
+After they were released, `com.sparrowwallet:hid4java:0.8.1` and `com.sparrowwallet:usb4java:1.3.6` were published to Maven Central with additional descriptive metadata in their POM files.
+The jar files are unchanged, but the two POM files no longer match their recorded checksums, so the build stops with a dependency verification error.
+To build these releases, run:
+
+```shell
+./gradlew jpackage --dependency-verification lenient
+```
+
+Gradle will then report verification failures without stopping the build.
+Check the report in `build/reports/dependency-verification/` lists exactly two failures, for `hid4java-0.8.1.pom` and `usb4java-1.3.6.pom`.
+Any other failure indicates a problem and should be reported.
 
 ### Verifying the binaries are identical
 

@@ -203,6 +203,8 @@ public class PaymentController extends WalletFormController implements Initializ
                     DnsPayment cachedDnsPayment = DnsPaymentCache.getDnsPayment(dnsPaymentHrn);
                     if(cachedDnsPayment != null) {
                         setDnsPayment(cachedDnsPayment);
+                    } else if(AppServices.isTorStarting()) {
+                        //Sparrow connects once Tor has started, and the name is resolved then
                     } else if(Config.get().hasServer() && !AppServices.isConnected() && !AppServices.isConnecting()) {
                         if(Config.get().getConnectToResolve() == null || Config.get().getConnectToResolve() == Boolean.FALSE) {
                             Platform.runLater(() -> {
@@ -219,19 +221,7 @@ public class PaymentController extends WalletFormController implements Initializ
                             Platform.runLater(() -> EventManager.get().post(new RequestConnectEvent()));
                         }
                     } else {
-                        DnsPaymentService dnsPaymentService = new DnsPaymentService(dnsPaymentHrn);
-                        dnsPaymentService.setOnSucceeded(_ -> {
-                            if(isCurrentHrn(dnsPaymentHrn)) {
-                                dnsPaymentService.getValue().ifPresent(dnsPayment -> setDnsPayment(dnsPayment));
-                            }
-                        });
-                        dnsPaymentService.setOnFailed(failEvent -> {
-                            Throwable exception = failEvent.getSource().getException();
-                            if(isCurrentHrn(dnsPaymentHrn) && exception != null && !(exception.getCause() instanceof TimeoutException)) {
-                                AppServices.showErrorDialog("Validation failed for " + dnsPaymentHrn, Throwables.getRootCause(exception).getMessage());
-                            }
-                        });
-                        dnsPaymentService.start();
+                        resolveDnsPayment(dnsPaymentHrn);
                     }
                 }
 
@@ -425,6 +415,22 @@ public class PaymentController extends WalletFormController implements Initializ
         }
     }
 
+    private void resolveDnsPayment(String dnsPaymentHrn) {
+        DnsPaymentService dnsPaymentService = new DnsPaymentService(dnsPaymentHrn);
+        dnsPaymentService.setOnSucceeded(_ -> {
+            if(isCurrentHrn(dnsPaymentHrn)) {
+                dnsPaymentService.getValue().ifPresent(dnsPayment -> setDnsPayment(dnsPayment));
+            }
+        });
+        dnsPaymentService.setOnFailed(failEvent -> {
+            Throwable exception = failEvent.getSource().getException();
+            if(isCurrentHrn(dnsPaymentHrn) && exception != null && !(exception.getCause() instanceof TimeoutException)) {
+                AppServices.showErrorDialog("Validation failed for " + dnsPaymentHrn, Throwables.getRootCause(exception).getMessage());
+            }
+        });
+        dnsPaymentService.start();
+    }
+
     //Resolution is slow enough that several may be in flight at once, since every keystroke forming a valid hrn starts one.
     //Only the hrn the address field currently holds may be applied - an earlier one landing later must not replace the recipient.
     private boolean isCurrentHrn(String hrn) {
@@ -437,6 +443,9 @@ public class PaymentController extends WalletFormController implements Initializ
             setSilentPaymentAddress(dnsPayment.bitcoinURI().getSilentPaymentAddress());
         } else if(dnsPayment.hasAddress()) {
             DnsPaymentCache.putDnsPayment(dnsPayment.bitcoinURI().getAddress(), dnsPayment);
+        } else if(dnsPayment.hasMisplacedSilentPaymentAddress()) {
+            AppServices.showWarningDialog("Incorrect DNS Record", "The DNS payment instruction for " + dnsPayment.hrn() + " resolved correctly but is set incorrectly, placing its silent payment address under the parameter for a different network.");
+            return;
         } else if(dnsPayment.hasOtherNetworkSilentPaymentAddress()) {
             AppServices.showWarningDialog("Different Network", "The DNS payment instruction for " + dnsPayment.hrn() + " resolved correctly but contains a silent payment address for a different network.");
             return;
@@ -993,6 +1002,23 @@ public class PaymentController extends WalletFormController implements Initializ
     @Subscribe
     public void openWallets(OpenWalletsEvent event) {
         updateOpenWallets(event.getWallets());
+    }
+
+    @Override
+    @Subscribe
+    public void walletTabsClosed(WalletTabsClosedEvent event) {
+        if(event.getClosedWalletTabData().stream().anyMatch(tabData -> tabData.getWalletForm() == sendController.getWalletForm())) {
+            EventManager.get().unregister(this);
+        }
+    }
+
+    @Subscribe
+    public void connection(ConnectionEvent event) {
+        //A name entered while offline or before Tor was running has not been looked up, and is resolved now that it can be
+        Optional<String> optDnsPaymentHrn = DnsPayment.getHrn(address.getText());
+        if(optDnsPaymentHrn.isPresent() && dnsPaymentProperty.get() == null) {
+            resolveDnsPayment(optDnsPaymentHrn.get());
+        }
     }
 
     @Subscribe

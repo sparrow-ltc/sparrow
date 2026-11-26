@@ -1258,7 +1258,7 @@ public class HeadersController extends TransactionFormController implements Init
         fileChooser.setTitle("Save PSBT");
 
         if(headersForm.getName() != null && !headersForm.getName().isEmpty()) {
-            fileChooser.setInitialFileName(headersForm.getName().replace('/', '_') + ".psbt");
+            AppServices.setInitialFileName(fileChooser, headersForm.getName().replace('/', '_') + ".psbt");
         }
 
         AppServices.moveToActiveWindowScreen(window, 800, 450);
@@ -1638,7 +1638,7 @@ public class HeadersController extends TransactionFormController implements Init
         fileChooser.setTitle("Save Final Transaction");
 
         if(headersForm.getName() != null && !headersForm.getName().isEmpty()) {
-            fileChooser.setInitialFileName(headersForm.getName().replace(".psbt", "") + ".txn");
+            AppServices.setInitialFileName(fileChooser, headersForm.getName().replace(".psbt", "") + ".txn");
         }
 
         AppServices.moveToActiveWindowScreen(window, 800, 450);
