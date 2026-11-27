@@ -9,7 +9,7 @@
   <key>CFBundleAllowMixedLocalizations</key>
   <true/>
   <key>CFBundleExecutable</key>
-  <string>Sparrow-LTC</string>
+  <string>Sparrow</string>
   <key>CFBundleIconFile</key>
   <string>Sparrow-LTC.icns</string>
   <key>CFBundleIdentifier</key>

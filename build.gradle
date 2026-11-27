@@ -340,7 +340,7 @@ if(os.macOsX) {
 // Give the launcher a Sparrow LC_UUID, since the stock jpackage launcher shares its Mach-O UUID with every app packaged by the same JDK
 tasks.register('patchLauncherUuid') {
     dependsOn tasks.jpackageImage
-    def appDir = layout.buildDirectory.dir('jpackage/Sparrow.app').get().asFile
+    def appDir = layout.buildDirectory.dir('jpackage/Sparrow-LTC.app').get().asFile
     def launcherUuid = UUID.nameUUIDFromBytes("com.sparrowwallet.sparrow.${osArch}".getBytes('UTF-8'))
     doLast {
         def launcher = new File(appDir, 'Contents/MacOS/Sparrow')
