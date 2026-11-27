@@ -522,7 +522,9 @@ public class TransactionController implements Initializable {
                 } else if(openWalletOutputScripts.get(output.getScript()) != null) {
                     WalletNode walletNode = openWalletOutputScripts.get(output.getScript());
                     if(walletNode != null) {
-                        Set<BlockTransactionHash> references = walletNode.getTransactionOutputs().stream().flatMap(txo -> txo.isSpent() ? Stream.of(txo.getSpentBy()) : Stream.empty()).collect(Collectors.toCollection(TreeSet::new));
+                        Set<BlockTransactionHash> references = walletNode.getTransactionOutputs().stream()
+                                .flatMap(txo -> txo.isSpent() ? Stream.of(txo.getSpentBy()) : Stream.empty())
+                                .collect(Collectors.toCollection(() -> new TreeSet<>(Comparator.comparing(BlockTransactionHash::getHash))));
                         blockTransactionHashes.set(i, references);
                         for(BlockTransactionHash reference : references) {
                             BlockTransaction blkTx = walletNode.getWallet().getWalletTransaction(reference.getHash());
