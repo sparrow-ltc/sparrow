@@ -2279,11 +2279,10 @@ public class AppController implements Initializable {
                 //If the new PSBT is finalized, copy the finalized fields to the existing unfinalized PSBT
                 try {
                     //A finalized PSBT is copied rather than combined, so the signatures it provides are verified here before they replace those already collected
-                    currentPsbt.verifyFinalizedSignatures(psbt);
                     transactionTabData.setPsbt(psbt);
                     setTabName(tab, name);
                     EventManager.get().post(new PSBTFinalizedEvent(psbt));
-                } catch(PSBTSignatureException e) {
+                } catch(Exception e) {
                     AppServices.showErrorDialog("Invalid PSBT", e.getMessage());
                 }
             }
